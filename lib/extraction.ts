@@ -199,10 +199,12 @@ export type Estimate = {
 };
 
 /**
- * Find the time_estimates bracket for a service + size. Bounds are half-open
- * [min, max): a size exactly on a shared boundary (e.g. 30 m² between 20–30 and
- * 30–40) lands deterministically in the upper bracket. Sizes below the smallest
- * bracket or at/above the largest bracket's max return null (→ fallback).
+ * Find the time_estimates bracket for a service + size. Bounds are
+ * inclusive-lower: a size exactly on a shared boundary (e.g. 30 m² between
+ * 20–30 and 30–40) lands in the LOWER bracket (20–30). Implemented as (min,
+ * max], with a fallback so the smallest bracket still includes its own min
+ * (e.g. exactly 20 m²). Order-independent. Sizes above the largest bracket's
+ * max return null (→ fallback).
  */
 export function lookupTimeEstimate(
   serviceType: string | null,
@@ -210,12 +212,16 @@ export function lookupTimeEstimate(
   estimates: TimeEstimate[]
 ): TimeEstimate | null {
   if (!serviceType || m2 == null) return null;
+  const forService = estimates.filter((e) => e.service_type === serviceType);
+  // Primary: (min, max] — a boundary value matches the bracket it's the max of.
+  const primary = forService.find(
+    (e) => m2 > Number(e.size_min_m2) && m2 <= Number(e.size_max_m2)
+  );
+  if (primary) return primary;
+  // Fallback: value equal to the smallest bracket's min (no lower neighbour).
   return (
-    estimates.find(
-      (e) =>
-        e.service_type === serviceType &&
-        m2 >= Number(e.size_min_m2) &&
-        m2 < Number(e.size_max_m2)
+    forService.find(
+      (e) => m2 >= Number(e.size_min_m2) && m2 <= Number(e.size_max_m2)
     ) ?? null
   );
 }

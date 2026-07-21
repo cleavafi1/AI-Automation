@@ -6,12 +6,11 @@
 -- cleaner-count logic anywhere in the system. Hours are then multiplied by the
 -- pricing_tiers rate to produce a price range, all in code (never the model).
 --
--- Brackets are matched HALF-OPEN in code: a row matches when
--- size_m2 >= size_min_m2 AND size_m2 < size_max_m2 (see lib/extraction.ts).
--- Seed brackets are contiguous and share endpoints (…20–30, 30–40…); half-open
--- matching makes a boundary value land deterministically in the upper bracket.
--- Sizes below the smallest bracket or at/above the largest max fall through to
--- the size-bucket fallback in code.
+-- Brackets are matched INCLUSIVE-LOWER in code (see lib/extraction.ts): a row
+-- matches on (size_min_m2, size_max_m2], with a fallback so the smallest bracket
+-- also includes its own min. Seed brackets are contiguous and share endpoints
+-- (…20–30, 30–40…); a boundary value lands in the LOWER bracket (30 → 20–30).
+-- Sizes above the largest max fall through to the size-bucket fallback in code.
 
 create extension if not exists "pgcrypto";
 

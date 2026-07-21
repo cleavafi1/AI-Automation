@@ -1,9 +1,10 @@
 -- Migration: seed time_estimates with the estimation guide's size-bracket
 -- single-cleaner (1c) hour ranges. Idempotent: clears existing rows first.
 --
--- Brackets share endpoints (…20–30, 30–40…) and are matched HALF-OPEN in code
--- ([size_min, size_max): see lib/extraction.ts), so a boundary value lands in
--- the upper bracket. Always assumes 1 cleaner — there is no cleaner-count model.
+-- Brackets share endpoints (…20–30, 30–40…) and are matched INCLUSIVE-LOWER in
+-- code ((size_min, size_max]: see lib/extraction.ts), so a boundary value lands
+-- in the LOWER bracket (30 → 20–30). Always assumes 1 cleaner — no cleaner-count
+-- model.
 --
 -- Only kotisiivous, ikkunanpesu and muuttosiivous are in the guide. suursiivous
 -- keeps its 40 €/h rate but has no brackets → the code falls back to size-bucket
