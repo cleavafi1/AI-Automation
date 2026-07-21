@@ -265,6 +265,16 @@ export default async function AdminQuotesPage({
                         ? `${q.estimated_price_eur} €`
                         : "—"}
                     </div>
+                    {q.proposed_date && (
+                      <div className="mt-0.5 text-xs text-slate-500">
+                        Ehdotettu: {proposedAppointment(q)}
+                      </div>
+                    )}
+                    {q.calendar_event_id && (
+                      <div className="text-xs font-medium text-indigo-600">
+                        ● Tentative hold placed
+                      </div>
+                    )}
                   </div>
                   <ApproveSendButton
                     quoteId={q.id}
@@ -307,6 +317,17 @@ export default async function AdminQuotesPage({
                     <p className="mt-1.5 whitespace-pre-wrap text-sm text-slate-700">
                       {q.drafted_text}
                     </p>
+                    {q.proposed_date && (
+                      <div className="mt-3 rounded-md bg-indigo-50 px-3 py-2 text-xs text-indigo-900">
+                        <span className="font-semibold">
+                          Ehdotettu aika (ei vahvistettu):{" "}
+                        </span>
+                        {proposedAppointment(q)}
+                        {q.calendar_event_id
+                          ? " · alustava varaus kalenterissa"
+                          : ""}
+                      </div>
+                    )}
                     {q.is_flagged && q.flag_reason && (
                       <div className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
                         <span className="font-semibold">Flag reason: </span>
@@ -368,6 +389,17 @@ export default async function AdminQuotesPage({
 function sizeDisplay(inq: Inquiry): string {
   if (inq.property_size_m2 != null) return `${inq.property_size_m2} m²`;
   return sizeLabel(inq.property_size);
+}
+
+// "DD.MM.YYYY klo HH:MM–HH:MM" from the proposed-appointment columns (times
+// come back from Postgres as "HH:MM:SS" — trim to HH:MM).
+function proposedAppointment(q: Quote): string {
+  if (!q.proposed_date) return "—";
+  const [y, m, d] = q.proposed_date.split("-");
+  const start = (q.proposed_start_time ?? "").slice(0, 5);
+  const end = (q.proposed_end_time ?? "").slice(0, 5);
+  const range = start && end ? ` klo ${start}–${end}` : "";
+  return `${d}.${m}.${y}${range}`;
 }
 
 function Row({ label, value }: { label: string; value: string }) {

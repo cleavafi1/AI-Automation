@@ -9,6 +9,9 @@ import {
   describeEstimate,
   type Estimate,
 } from "./extraction";
+import { findNearestAvailableSlot, type Slot } from "./booking";
+import { resolveUusimaa } from "./locations";
+import { parseHelsinkiDateTime } from "./timezone";
 import {
   isHomeService,
   serviceLabel,
@@ -87,6 +90,7 @@ Ohjeet kenttiin:
   - Jos alla on laskettu AIKA-ARVIO (tuntiarvio ja/tai arviohinta): voit mainita sen suuntaa-antavana arviona. Käytä VAIN annettuja lukuja — älä keksi omia tunteja tai euroja.
   - Jos palvelu on tarjouspohjainen (ei kiinteää tuntihintaa) tai aika-arviota ei voitu laskea: kerro että laadimme kohteesta erillisen, räätälöidyn tarjouksen, äläkä keksi hintaa.
   - Jos pyynnöstä puuttuu olennaisia tietoja (merkitty HUOM-rivillä): pyydä kohteliaasti asiakasta täydentämään puuttuvat tiedot (esim. kohteen koko, palvelu tai sijainti), äläkä esitä hinta-arviota epävarmoista tiedoista.
+  - Jos alla on EHDOTETTU AIKA: esitä se selkeästi EHDOTUKSENA, joka vaatii asiakkaan vahvistuksen. Käytä ilmaisua "ehdotettu aika" tai "alustava ehdotus". ÄLÄ KOSKAAN kirjoita että aika on "varattu", "vahvistettu" tai "sovittu". Pyydä asiakasta vahvistamaan tai ehdottamaan toista aikaa. Käytä VAIN annettua aikaa — älä keksi omaa. Jos ehdotettua aikaa ei ole, älä mainitse mitään tarkkaa aikaa.
   - Mainitse kotitalousvähennys (35 %, enintään 1 600 € / vuosi / henkilö) VAIN jos alla kerrotaan että se koskee tätä palvelua.
   - Kerro että otamme yhteyttä 24 tunnin sisällä.
   - Älä keksi euromääräistä loppuhintaa tekstiin — käytä vain annettuja lukuja.
@@ -95,7 +99,8 @@ Ohjeet kenttiin:
 function buildUserContent(
   inquiry: Inquiry,
   pricing: ReturnType<typeof resolvePricing>,
-  estimate: Estimate
+  estimate: Estimate,
+  proposedSlot: Slot | null
 ): string {
   const homeService = inquiry.service_type
     ? isHomeService(inquiry.service_type)
@@ -134,9 +139,34 @@ function buildUserContent(
       homeService ? "KYLLÄ" : "EI / ei tiedossa"
     }`,
     pricing.noRateReason ? `- Huom: ${pricing.noRateReason}` : "",
+    "",
+    "EHDOTETTU AIKA (laskettu kalenterin saatavuudesta — EI vahvistettu varaus):",
+    proposedSlot
+      ? `- ${describeProposedSlot(proposedSlot)}`
+      : "- Ei ehdotettua aikaa (aikaa ei voitu laskea tai kalenteri ei ollut käytettävissä). Älä ehdota tarkkaa aikaa.",
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+// Finnish weekday names for the proposed-slot description.
+const FI_WEEKDAYS = [
+  "sunnuntai",
+  "maanantai",
+  "tiistai",
+  "keskiviikko",
+  "torstai",
+  "perjantai",
+  "lauantai",
+];
+
+function describeProposedSlot(slot: Slot): string {
+  const [y, m, d] = slot.date.split("-").map(Number);
+  // Weekday of the Helsinki calendar date (tz-independent via a UTC anchor).
+  const weekday = FI_WEEKDAYS[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
+  const dd = String(d).padStart(2, "0");
+  const mm = String(m).padStart(2, "0");
+  return `${weekday} ${dd}.${mm}.${y} klo ${slot.startTime}–${slot.endTime}`;
 }
 
 export async function generateQuoteForInquiry(inquiryId: string): Promise<Quote> {
@@ -157,11 +187,18 @@ export async function generateQuoteForInquiry(inquiryId: string): Promise<Quote>
   }
   let typedInquiry = inquiry as Inquiry;
 
+  // Concrete appointment request (Helsinki), captured from extraction for the
+  // slot finder below. Null when the customer gave only a vague time.
+  let requestedDate: string | null = null;
+  let requestedTime: string | null = null;
+
   // 1b. Extract structured fields from the free-text request (Phase 4). This is
   // a separate Claude call from the drafting one below. Persist the extracted
   // fields back onto the inquiry so /admin and the draft prompt both see them.
   if (typedInquiry.raw_request && typedInquiry.raw_request.trim()) {
     const extraction = await extractFromRequest(typedInquiry.raw_request);
+    requestedDate = extraction.requested_date;
+    requestedTime = extraction.requested_time;
 
     // Fold preferred time + condition notes into the free-text notes column so
     // downstream flag logic / display can use them.
@@ -226,6 +263,37 @@ export async function generateQuoteForInquiry(inquiryId: string): Promise<Quote>
     MIN_HOURS
   );
 
+  // 2c. Propose an appointment slot from live calendar availability + booking
+  // rules (Phase 5). Only when we know a duration to schedule (estimate has an
+  // upper-bound hour figure). The full estimated duration must fit the working
+  // window, so we schedule against the MAX hours. Calendar failures (e.g. no
+  // credentials in local dev) must NOT break quote generation — we log and
+  // leave the proposed slot null.
+  let proposedSlot: Slot | null = null;
+  if (estimate.hoursMax != null) {
+    const { isUusimaa } = resolveUusimaa(
+      typedInquiry.city,
+      typedInquiry.postal_code
+    );
+    const requested =
+      requestedDate != null
+        ? parseHelsinkiDateTime(requestedDate, requestedTime ?? "08:00")
+        : null;
+    try {
+      proposedSlot = await findNearestAvailableSlot({
+        durationHours: estimate.hoursMax,
+        isUusimaa,
+        requested,
+      });
+    } catch (err) {
+      console.error(
+        `[quote] calendar availability lookup failed for inquiry ${typedInquiry.id}:`,
+        err
+      );
+      proposedSlot = null;
+    }
+  }
+
   // 3. Ask Claude to classify + draft.
   const anthropic = getAnthropic();
   const response = await anthropic.messages.create({
@@ -240,7 +308,7 @@ export async function generateQuoteForInquiry(inquiryId: string): Promise<Quote>
     messages: [
       {
         role: "user",
-        content: buildUserContent(typedInquiry, pricing, estimate),
+        content: buildUserContent(typedInquiry, pricing, estimate, proposedSlot),
       },
     ],
   });
@@ -318,7 +386,10 @@ export async function generateQuoteForInquiry(inquiryId: string): Promise<Quote>
       estimated_price_eur: estimatedPrice,
       is_flagged: isFlagged,
       flag_reason: flagReason,
-      // status defaults to 'draft'
+      proposed_date: proposedSlot?.date ?? null,
+      proposed_start_time: proposedSlot?.startTime ?? null,
+      proposed_end_time: proposedSlot?.endTime ?? null,
+      // status defaults to 'draft'; calendar_event_id set on approval
     })
     .select("*")
     .single();

@@ -51,6 +51,13 @@ export type Quote = {
   is_flagged: boolean;
   flag_reason: string | null;
   status: "draft" | "approved" | "rejected";
+  // Proposed appointment (Phase 5) — Europe/Helsinki wall-clock. A proposal
+  // requiring confirmation, not a booking.
+  proposed_date: string | null; // "YYYY-MM-DD"
+  proposed_start_time: string | null; // "HH:MM[:SS]"
+  proposed_end_time: string | null; // "HH:MM[:SS]"
+  // Set when the tentative hold event is created on approval.
+  calendar_event_id: string | null;
   created_at: string;
 };
 

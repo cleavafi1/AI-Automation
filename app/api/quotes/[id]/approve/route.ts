@@ -1,17 +1,27 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabase";
+import {
+  placeTentativeHold,
+  SlotNoLongerFreeError,
+  QuoteNotFoundError,
+} from "@/lib/tentative-hold";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
-// Sets a quote's status to 'approved'. Called by the internal page just before
-// send-offer.
+// Sets a quote's status to 'approved', then places a tentative calendar hold
+// (Phase 5): a final availability re-check + a tentative event on the proposed
+// slot. Called by the admin page just before send-offer; if the slot is no
+// longer free (or the calendar check fails), we return a non-2xx so the client
+// does NOT proceed to send.
 export async function POST(
   _request: Request,
   { params }: { params: { id: string } }
 ) {
   const quoteId = params.id;
 
+  // 1. Approve.
   try {
     const supabase = getSupabaseAdmin();
     const { data, error } = await supabase
@@ -31,13 +41,41 @@ export async function POST(
     if (!data) {
       return NextResponse.json({ error: "Quote not found." }, { status: 404 });
     }
-
-    return NextResponse.json({ quote: data }, { status: 200 });
   } catch (err) {
     console.error("[api/approve] unexpected error:", err);
     return NextResponse.json(
       { error: "Failed to approve quote." },
       { status: 500 }
+    );
+  }
+
+  // 2. Tentative calendar hold (final re-check + event creation).
+  try {
+    const hold = await placeTentativeHold(quoteId);
+    return NextResponse.json({ quote: { id: quoteId }, hold }, { status: 200 });
+  } catch (err) {
+    if (err instanceof QuoteNotFoundError) {
+      return NextResponse.json({ error: "Quote not found." }, { status: 404 });
+    }
+    if (err instanceof SlotNoLongerFreeError) {
+      // 409 — the client must not send. Surface a clear, actionable message.
+      return NextResponse.json(
+        {
+          error:
+            "Ehdotettu aika ei ole enää vapaa kalenterissa. Tarkista ja säädä aikaa manuaalisesti ennen lähetystä.",
+        },
+        { status: 409 }
+      );
+    }
+    // Calendar unavailable / any other hold failure: don't send. The quote is
+    // approved; the admin can retry once the calendar is reachable.
+    console.error("[api/approve] tentative hold failed:", err);
+    return NextResponse.json(
+      {
+        error:
+          "Kalenterin tarkistus tai alustava varaus epäonnistui. Tarjousta ei lähetetty. Yritä uudelleen.",
+      },
+      { status: 502 }
     );
   }
 }

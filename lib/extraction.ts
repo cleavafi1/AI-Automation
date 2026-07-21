@@ -6,6 +6,7 @@ import {
   FREQUENCY_VALUES,
   serviceLabel,
 } from "./constants";
+import { helsinkiTodayString } from "./timezone";
 import type { ResolvedPricing } from "./pricing";
 import type { TimeEstimate } from "./types";
 
@@ -24,6 +25,9 @@ const RawExtractionSchema = z.object({
   postal_code: z.string().nullable(),
   city: z.string().nullable(),
   preferred_time: z.string().nullable(),
+  // Concrete, resolvable date/time only (see prompt) — vague terms stay null.
+  requested_date: z.string().nullable(),
+  requested_time: z.string().nullable(),
   frequency: z.string().nullable(),
   condition_notes: z.string().nullable(),
 });
@@ -39,6 +43,8 @@ const RAW_EXTRACTION_JSON_SCHEMA = {
     postal_code: { type: ["string", "null"] },
     city: { type: ["string", "null"] },
     preferred_time: { type: ["string", "null"] },
+    requested_date: { type: ["string", "null"] },
+    requested_time: { type: ["string", "null"] },
     frequency: { type: ["string", "null"] },
     condition_notes: { type: ["string", "null"] },
   },
@@ -48,6 +54,8 @@ const RAW_EXTRACTION_JSON_SCHEMA = {
     "postal_code",
     "city",
     "preferred_time",
+    "requested_date",
+    "requested_time",
     "frequency",
     "condition_notes",
   ],
@@ -60,6 +68,9 @@ export type Extraction = {
   postal_code: string | null;
   city: string | null;
   preferred_time: string | null;
+  // Normalized concrete appointment request (Helsinki), for the slot finder.
+  requested_date: string | null; // "YYYY-MM-DD"
+  requested_time: string | null; // "HH:MM"
   frequency: string | null;
   condition_notes: string | null;
   needs_clarification: boolean;
@@ -76,6 +87,8 @@ Kentät:
 - postal_code: 5-numeroinen postinumero jos mainittu, muuten null.
 - city: kaupunki/paikkakunta jos mainittu (esim. Helsinki, Espoo, Vantaa, Jyväskylä), muuten null.
 - preferred_time: toivottu ajankohta asiakkaan omin sanoin (esim. "ensi viikolla", "15.8. aamupäivä"), muuten null.
+- requested_date: TÄSMÄLLINEN toivottu päivä muodossa YYYY-MM-DD, VAIN jos asiakas antaa selkeän päivämäärän tai selvästi laskettavissa olevan päivän (esim. "15.8." → tämän vuoden 15. elokuuta, "ensi maanantaina" → laske alla annetusta tämän päivän päivämäärästä). Jos ajankohta on epämääräinen ("pian", "ensi viikolla", "elokuussa", "joskus"), palauta null — ÄLÄ arvaa tarkkaa päivää.
+- requested_time: TÄSMÄLLINEN kellonaika muodossa HH:MM (24h), VAIN jos asiakas antaa selkeän ajan (esim. "klo 10", "aamupäivällä" → älä arvaa; vain jos tarkka). Muuten null.
 - frequency: siivousväli. Palauta täsmälleen yksi näistä koodeista tai null: ${FREQUENCY_VALUES.join(", ")}. (kertaluontoinen = kertaluontoinen, viikoittain = viikoittain, joka_toinen_viikko = joka toinen viikko, kuukausittain = kuukausittain.)
 - condition_notes: maininnat kunnosta, lemmikeistä, kulusta/avaimista, erikoistoiveista tai lisätöistä (esim. "kaksi kissaa", "uuni pestävä", "avain saatavilla ovimatolta"). Muuten null.
 
@@ -93,7 +106,12 @@ export async function extractFromRequest(
       format: { type: "json_schema", schema: RAW_EXTRACTION_JSON_SCHEMA },
     },
     system: EXTRACTION_SYSTEM_PROMPT,
-    messages: [{ role: "user", content: `SIIVOUSPYYNTÖ:\n${rawRequest}` }],
+    messages: [
+      {
+        role: "user",
+        content: `Tämän päivän päivämäärä (Europe/Helsinki): ${helsinkiTodayString()}. Käytä tätä suhteellisten päivien laskemiseen.\n\nSIIVOUSPYYNTÖ:\n${rawRequest}`,
+      },
+    ],
   });
 
   if (response.stop_reason === "refusal") {
@@ -157,6 +175,18 @@ export function normalizeExtraction(raw: RawExtraction): Extraction {
       ? raw.condition_notes.trim()
       : null;
 
+  // Accept requested_date/time only in strict formats — otherwise null (the
+  // slot finder then falls back to nearest-available). Guards against the model
+  // returning a vague string where a strict date/time was asked for.
+  const requested_date =
+    raw.requested_date && /^\d{4}-\d{2}-\d{2}$/.test(raw.requested_date.trim())
+      ? raw.requested_date.trim()
+      : null;
+  const requested_time =
+    raw.requested_time && /^\d{1,2}:\d{2}$/.test(raw.requested_time.trim())
+      ? raw.requested_time.trim().padStart(5, "0")
+      : null;
+
   // needs_clarification: true when service type, size, OR location can't be
   // determined (location = postal code or city). Reason is code-built.
   const missing: string[] = [];
@@ -175,6 +205,8 @@ export function normalizeExtraction(raw: RawExtraction): Extraction {
     postal_code,
     city,
     preferred_time,
+    requested_date,
+    requested_time,
     frequency,
     condition_notes,
     needs_clarification,

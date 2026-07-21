@@ -221,9 +221,73 @@ a deterministic lookup produces the hour + price estimate.
    service/size/location, the deterministic hour+price estimate, and — for a
    vague request missing size/service/location — the **Needs clarification** flag.
 
-## Out of scope (Phase 4)
+## Phase 5 — Google Calendar availability + booking rules
 
-Google Calendar integration (Phase 5) and the Telegram bot (Phase 6).
+After estimating hours/price, the pipeline checks the real Google Calendar and
+proposes an appointment slot that satisfies deterministic booking rules. On
+approval it re-checks and places a **tentative** hold. Nothing is auto-confirmed.
+
+- **Env** — `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64` (the full service-account JSON,
+  base64-encoded — decoded at runtime, never stored raw; same pattern as
+  `ADMIN_PASSWORD_HASH`) and `GOOGLE_CALENDAR_ID`. Share the calendar with the
+  service account's `client_email` ("Make changes to events").
+- **`lib/timezone.ts`** — Europe/Helsinki wall-clock ⇆ UTC helpers (DST-correct
+  via `Intl`). All booking math is done in Helsinki time regardless of server tz.
+- **`lib/calendar.ts`** — `googleapis` JWT/service-account client (scope
+  `…/auth/calendar`). `listEvents(min,max)` and `createTaggedEvent(...)`. Every
+  event we create carries `extendedProperties.private.source = "cleava-agent"`.
+- **`lib/locations.ts`** — hardcoded Uusimaa lookup (Helsinki/Espoo/Vantaa/
+  Kauniainen/Kirkkonummi/Kerava/Järvenpää/Tuusula/Sipoo/Nurmijärvi = Uusimaa;
+  Jyväskylä/Kuokkala/Palokka/Vaajakoski/Muurame = not), city first with a
+  postal-prefix backstop. Unknown → defaults to Uusimaa (conservative).
+- **`lib/booking.ts`** — the deterministic rules engine (no AI):
+  - Working window **08:00–18:00**; the full estimated duration (scheduled
+    against the **max** hour estimate) must fit before 18:00.
+  - No overlap with any existing timed event.
+  - **Uusimaa**: 1-hour travel gap before/after neighbouring events.
+  - **Max 5 cleaning appointments/day**. Counting pre-existing entries is a
+    **best-effort keyword heuristic** (siivous/kotisiivous/muuttosiivous/
+    ikkunanpesu/tehopuhdistus/suursiivous) — a documented limitation on
+    inconsistently-named historical data. Our own events are counted **exactly**
+    via the `source: cleava-agent` tag, so going forward counting is reliable.
+  - `findNearestAvailableSlot(...)` returns the valid slot closest to the
+    requested time (or nearest upcoming when none given), searching ~21 days.
+- **Extraction** — now also returns a **concrete** `requested_date`/
+  `requested_time` (only when clearly resolvable; vague terms stay null). Given
+  today's Helsinki date, "ensi maanantaina" resolves; "pian" does not.
+- **Quotes** (`0010`) — `proposed_date`, `proposed_start_time`,
+  `proposed_end_time`, `calendar_event_id`. The drafting prompt phrases the slot
+  strictly as an **"ehdotettu aika"** (proposal requiring confirmation) — never
+  "varattu"/"vahvistettu".
+- **Tentative hold on approval** — the `/admin` **Approve & send** flow now,
+  after approving and **before** sending, re-checks the calendar one final time
+  (a slot can fill between generation and approval). If still free it creates a
+  tentative event `Tentative – [Name] – Quote awaiting acceptance` (tagged) and
+  stores its id; the client then sends. If the slot is gone it returns **409**
+  and the offer is **not** sent — the error surfaces in `/admin` for a manual
+  re-check. Idempotent: a stored `calendar_event_id` prevents duplicate events on
+  resend.
+
+Calendar failures at generation time never break quoting — the proposed slot is
+simply left empty and the quote is still produced (and sendable).
+
+### Testing Phase 5
+
+1. Add `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64` + `GOOGLE_CALENDAR_ID` to
+   `.env.local`, share the calendar with the service account, apply migration
+   `0010`, restart.
+2. Submit a request with a concrete time (e.g. *"...ensi torstaina klo 10"*) and
+   generate the quote (Approve/Generate in `/admin`). Confirm the drafted text
+   proposes the time as *ehdotettu aika* and the card shows the proposed slot.
+3. In `/admin` click **Approve & send** → a tentative event appears on the
+   calendar and the card shows "Tentative hold placed". Manually create a
+   conflicting event on the proposed slot first to verify the **409 / not sent**
+   path.
+
+## Out of scope (Phase 5)
+
+The Telegram bot (Phase 6), converting tentative → confirmed on customer
+acceptance (Phase 7), and the natural-language edit loop.
 
 ## Out of scope (admin phase)
 
