@@ -13,12 +13,9 @@ export type ResolvedPricing = {
   noRateReason: string | null;
 };
 
-// kotisiivous is the only service whose rate depends on frequency; its tiers
-// are labelled by frequency value.
-const FREQUENCY_KEYED_SERVICES = new Set(["kotisiivous"]);
-
-// Fallback on-site hours per property-size bucket, used when the model doesn't
-// supply an estimate for a fixed-rate service. Rough starting points for a
+// Fallback on-site hours per property-size bucket, used for fixed-rate services
+// that have no matching time_estimates row (e.g. suursiivous, which keeps its
+// hourly rate but is not in the estimation guide). Rough starting points for a
 // single visit — the quote is still flagged for review, but the reviewer sees
 // a number rather than nothing. All at or above the 2h minimum order.
 const DEFAULT_HOURS_BY_SIZE: Record<string, number> = {
@@ -34,7 +31,10 @@ const DEFAULT_HOURS_BY_SIZE: Record<string, number> = {
 };
 
 /** Fallback hour estimate for a property size (defaults to 2h if unknown). */
-export function fallbackHoursForSize(propertySize: string): number {
+export function fallbackHoursForSize(
+  propertySize: string | null | undefined
+): number {
+  if (!propertySize) return 2;
   return DEFAULT_HOURS_BY_SIZE[propertySize] ?? 2;
 }
 
@@ -46,6 +46,19 @@ export function resolvePricing(
   inquiry: Inquiry,
   tiers: PricingTier[]
 ): ResolvedPricing {
+  // Service type couldn't be extracted → no rate; needs a human/clarification.
+  if (!inquiry.service_type) {
+    return {
+      rateType: "quote_only",
+      baseRate: null,
+      tierLabel: null,
+      tierNotes: null,
+      hasStandardRate: false,
+      noRateReason:
+        "Palvelua ei voitu tunnistaa pyynnöstä — vaatii tarkennuksen.",
+    };
+  }
+
   const serviceTiers = tiers.filter(
     (t) => t.service_type === inquiry.service_type
   );
@@ -62,32 +75,9 @@ export function resolvePricing(
     };
   }
 
-  // Frequency-keyed hourly services (kotisiivous): match tier by frequency.
-  if (FREQUENCY_KEYED_SERVICES.has(inquiry.service_type)) {
-    const match = serviceTiers.find((t) => t.tier_label === inquiry.frequency);
-    if (match && match.base_rate_eur != null) {
-      return {
-        rateType: "hourly",
-        baseRate: Number(match.base_rate_eur),
-        tierLabel: match.tier_label,
-        tierNotes: match.notes,
-        hasStandardRate: true,
-        noRateReason: null,
-      };
-    }
-    // No matching frequency tier (e.g. kertaluontoinen kotisiivous).
-    return {
-      rateType: "hourly",
-      baseRate: null,
-      tierLabel: null,
-      tierNotes: null,
-      hasStandardRate: false,
-      noRateReason:
-        "Tälle siivousvälille ei ole vakiotuntihintaa — vaatii erillisen tarjouksen.",
-    };
-  }
-
-  // Single-tier hourly services (ikkunanpesu, suursiivous, muuttosiivous).
+  // Single-tier hourly services. kotisiivous is now a flat 39 €/h (no longer
+  // frequency-keyed); ikkunanpesu, suursiivous and muuttosiivous were always
+  // single-rate.
   const hourly = serviceTiers.find((t) => t.rate_type === "hourly");
   if (hourly && hourly.base_rate_eur != null) {
     return {

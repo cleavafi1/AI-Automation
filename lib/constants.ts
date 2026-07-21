@@ -34,6 +34,30 @@ export const SERVICE_TYPE_VALUES = SERVICE_TYPES.map((o) => o.value);
 export const PROPERTY_SIZE_VALUES = PROPERTY_SIZES.map((o) => o.value);
 export const FREQUENCY_VALUES = FREQUENCIES.map((o) => o.value);
 
+// Upper bound (inclusive, m²) of each size bucket, in order. Used to derive the
+// legacy bucket string from an AI-extracted numeric m² for display continuity.
+// The pricing/hours math itself keys on the raw m² (via time_estimates), not
+// on these buckets.
+const SIZE_BUCKET_UPPER_BOUNDS: ReadonlyArray<{ value: string; maxM2: number }> = [
+  { value: "alle_35", maxM2: 34 },
+  { value: "35_49", maxM2: 49 },
+  { value: "50_64", maxM2: 64 },
+  { value: "65_79", maxM2: 79 },
+  { value: "80_99", maxM2: 99 },
+  { value: "100_119", maxM2: 119 },
+  { value: "120_149", maxM2: 149 },
+  { value: "150_199", maxM2: 199 },
+  { value: "200_plus", maxM2: Infinity },
+];
+
+/** Map an extracted numeric m² to the legacy size-bucket value (for display). */
+export function sizeBucketForM2(m2: number | null | undefined): string | null {
+  if (m2 == null || !Number.isFinite(m2) || m2 <= 0) return null;
+  return (
+    SIZE_BUCKET_UPPER_BOUNDS.find((b) => m2 <= b.maxM2)?.value ?? "200_plus"
+  );
+}
+
 // Home-related services: kotitalousvähennys (household tax deduction) applies
 // only to these. Office/commercial services are excluded.
 export const HOME_SERVICES = [
@@ -59,16 +83,20 @@ export function isQuoteOnlyService(serviceType: string): boolean {
   return (QUOTE_ONLY_SERVICES as readonly string[]).includes(serviceType);
 }
 
-// Human-readable Finnish labels for logging / prompts.
-export function serviceLabel(value: string): string {
+// Human-readable Finnish labels for logging / prompts. Tolerant of the now-
+// nullable extracted fields: null/unknown renders as an em dash.
+export function serviceLabel(value: string | null | undefined): string {
+  if (!value) return "—";
   return SERVICE_TYPES.find((o) => o.value === value)?.label ?? value;
 }
 
-export function sizeLabel(value: string): string {
+export function sizeLabel(value: string | null | undefined): string {
+  if (!value) return "—";
   return PROPERTY_SIZES.find((o) => o.value === value)?.label ?? value;
 }
 
-export function frequencyLabel(value: string): string {
+export function frequencyLabel(value: string | null | undefined): string {
+  if (!value) return "—";
   return FREQUENCIES.find((o) => o.value === value)?.label ?? value;
 }
 

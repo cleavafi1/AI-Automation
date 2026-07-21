@@ -179,14 +179,13 @@ export default async function AdminQuotesPage({
               >
                 <div className="min-w-0">
                   <div className="font-medium text-slate-800">{inq.name}</div>
-                  <div className="text-xs text-slate-600">
-                    {serviceLabel(inq.service_type)} ·{" "}
-                    {sizeLabel(inq.property_size)} ·{" "}
-                    {frequencyLabel(inq.frequency)} · {inq.postal_code}
-                    <span className="text-slate-400">
-                      {" "}
-                      · {new Date(inq.created_at).toLocaleString("fi-FI")}
-                    </span>
+                  {inq.raw_request && (
+                    <div className="mt-0.5 line-clamp-2 text-xs text-slate-600">
+                      “{inq.raw_request}”
+                    </div>
+                  )}
+                  <div className="mt-0.5 text-xs text-slate-400">
+                    {new Date(inq.created_at).toLocaleString("fi-FI")}
                   </div>
                 </div>
                 <GenerateQuoteButton inquiryId={inq.id} />
@@ -240,12 +239,17 @@ export default async function AdminQuotesPage({
                         ⚑ Flagged
                       </span>
                     )}
+                    {inq?.needs_clarification && (
+                      <span className="rounded-full bg-orange-100 px-2 py-0.5 text-xs font-semibold text-orange-800">
+                        ? Needs clarification
+                      </span>
+                    )}
                   </div>
                   {inq && (
                     <p className="mt-1 text-sm text-slate-600">
                       {serviceLabel(inq.service_type)} ·{" "}
-                      {sizeLabel(inq.property_size)} ·{" "}
-                      {frequencyLabel(inq.frequency)} · {inq.postal_code}
+                      {sizeDisplay(inq)} · {frequencyLabel(inq.frequency)}
+                      {inq.postal_code ? ` · ${inq.postal_code}` : ""}
                     </p>
                   )}
                   <p className="mt-0.5 text-xs text-slate-400">
@@ -316,27 +320,33 @@ export default async function AdminQuotesPage({
                     </h3>
                     {inq ? (
                       <dl className="mt-1.5 space-y-1 text-sm">
+                        <Row label="Request" value={inq.raw_request ?? "—"} />
                         <Row label="Email" value={inq.email} />
                         <Row label="Phone" value={inq.phone} />
                         <Row
                           label="Service"
                           value={serviceLabel(inq.service_type)}
                         />
-                        <Row
-                          label="Size"
-                          value={sizeLabel(inq.property_size)}
-                        />
+                        <Row label="Size" value={sizeDisplay(inq)} />
                         <Row
                           label="Frequency"
                           value={frequencyLabel(inq.frequency)}
                         />
                         <Row
-                          label="Postal"
-                          value={`${inq.postal_code}${
-                            inq.city ? ` · ${inq.city}` : ""
-                          }`}
+                          label="Location"
+                          value={
+                            [inq.postal_code, inq.city]
+                              .filter(Boolean)
+                              .join(" · ") || "—"
+                          }
                         />
                         <Row label="Notes" value={inq.notes ?? "—"} />
+                        {inq.needs_clarification && (
+                          <Row
+                            label="Clarify"
+                            value={inq.clarification_reason ?? "Tietoja puuttuu."}
+                          />
+                        )}
                       </dl>
                     ) : (
                       <p className="mt-1.5 text-sm text-slate-400">
@@ -352,6 +362,12 @@ export default async function AdminQuotesPage({
       </div>
     </div>
   );
+}
+
+// Prefer the extracted numeric m²; fall back to the legacy bucket label.
+function sizeDisplay(inq: Inquiry): string {
+  if (inq.property_size_m2 != null) return `${inq.property_size_m2} m²`;
+  return sizeLabel(inq.property_size);
 }
 
 function Row({ label, value }: { label: string; value: string }) {

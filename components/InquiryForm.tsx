@@ -1,32 +1,19 @@
 "use client";
 
 import { useState } from "react";
-import {
-  SERVICE_TYPES,
-  PROPERTY_SIZES,
-  FREQUENCIES,
-} from "@/lib/constants";
 
 type FormState = {
-  service_type: string;
-  property_size: string;
-  postal_code: string;
-  frequency: string;
   name: string;
   email: string;
   phone: string;
-  notes: string;
+  raw_request: string;
 };
 
 const EMPTY_FORM: FormState = {
-  service_type: "",
-  property_size: "",
-  postal_code: "",
-  frequency: "",
   name: "",
   email: "",
   phone: "",
-  notes: "",
+  raw_request: "",
 };
 
 type FieldErrors = Partial<Record<keyof FormState, string>>;
@@ -35,15 +22,12 @@ type FieldErrors = Partial<Record<keyof FormState, string>>;
 // The server remains the source of truth.
 function validate(form: FormState): FieldErrors {
   const errors: FieldErrors = {};
-  if (!form.service_type) errors.service_type = "Valitse palvelu.";
-  if (!form.property_size) errors.property_size = "Valitse kohteen koko.";
-  if (!/^\d{5}$/.test(form.postal_code.trim()))
-    errors.postal_code = "Anna kelvollinen postinumero (5 numeroa).";
-  if (!form.frequency) errors.frequency = "Valitse siivousväli.";
   if (!form.name.trim()) errors.name = "Anna nimesi.";
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim()))
     errors.email = "Anna kelvollinen sähköpostiosoite.";
   if (!form.phone.trim()) errors.phone = "Anna puhelinnumerosi.";
+  if (!form.raw_request.trim())
+    errors.raw_request = "Kerro lyhyesti mitä toivot.";
   return errors;
 }
 
@@ -123,57 +107,6 @@ export default function InquiryForm() {
 
   return (
     <form onSubmit={handleSubmit} noValidate className="space-y-5">
-      <Field label="Palvelu" htmlFor="service_type" error={errors.service_type}>
-        <Select
-          id="service_type"
-          value={form.service_type}
-          onChange={(v) => update("service_type", v)}
-          placeholder="Valitse palvelu"
-          options={SERVICE_TYPES}
-          invalid={!!errors.service_type}
-        />
-      </Field>
-
-      <Field
-        label="Kohteen koko"
-        htmlFor="property_size"
-        error={errors.property_size}
-      >
-        <Select
-          id="property_size"
-          value={form.property_size}
-          onChange={(v) => update("property_size", v)}
-          placeholder="Valitse kohteen koko"
-          options={PROPERTY_SIZES}
-          invalid={!!errors.property_size}
-        />
-      </Field>
-
-      <Field label="Postinumero" htmlFor="postal_code" error={errors.postal_code}>
-        <input
-          id="postal_code"
-          type="text"
-          inputMode="numeric"
-          autoComplete="postal-code"
-          maxLength={5}
-          value={form.postal_code}
-          onChange={(e) => update("postal_code", e.target.value)}
-          placeholder="00100"
-          className={inputClass(!!errors.postal_code)}
-        />
-      </Field>
-
-      <Field label="Siivousväli" htmlFor="frequency" error={errors.frequency}>
-        <Select
-          id="frequency"
-          value={form.frequency}
-          onChange={(v) => update("frequency", v)}
-          placeholder="Valitse siivousväli"
-          options={FREQUENCIES}
-          invalid={!!errors.frequency}
-        />
-      </Field>
-
       <Field label="Nimi" htmlFor="name" error={errors.name}>
         <input
           id="name"
@@ -196,7 +129,7 @@ export default function InquiryForm() {
         />
       </Field>
 
-      <Field label="Puhelin" htmlFor="phone" error={errors.phone}>
+      <Field label="Puhelinnumero" htmlFor="phone" error={errors.phone}>
         <input
           id="phone"
           type="tel"
@@ -209,17 +142,17 @@ export default function InquiryForm() {
       </Field>
 
       <Field
-        label="Lisätiedot (vapaaehtoinen)"
-        htmlFor="notes"
-        error={errors.notes}
+        label="Kerro lyhyesti mitä toivot"
+        htmlFor="raw_request"
+        error={errors.raw_request}
       >
         <textarea
-          id="notes"
-          rows={4}
-          value={form.notes}
-          onChange={(e) => update("notes", e.target.value)}
-          placeholder="Kerro tarkemmin kohteesta tai toiveistasi…"
-          className={inputClass(!!errors.notes)}
+          id="raw_request"
+          rows={5}
+          value={form.raw_request}
+          onChange={(e) => update("raw_request", e.target.value)}
+          placeholder="esim. asunnon koko, palvelu, ajankohta."
+          className={inputClass(!!errors.raw_request)}
         />
       </Field>
 
@@ -272,39 +205,5 @@ function Field({
       {children}
       {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
     </div>
-  );
-}
-
-function Select({
-  id,
-  value,
-  onChange,
-  placeholder,
-  options,
-  invalid,
-}: {
-  id: string;
-  value: string;
-  onChange: (value: string) => void;
-  placeholder: string;
-  options: ReadonlyArray<{ value: string; label: string }>;
-  invalid: boolean;
-}) {
-  return (
-    <select
-      id={id}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className={inputClass(invalid)}
-    >
-      <option value="" disabled>
-        {placeholder}
-      </option>
-      {options.map((o) => (
-        <option key={o.value} value={o.value}>
-          {o.label}
-        </option>
-      ))}
-    </select>
   );
 }

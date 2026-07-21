@@ -172,6 +172,59 @@ ADMIN_SESSION_SECRET=<random secret>
 Restart `npm run dev`, then visit `/admin` (redirects to `/admin/login` until
 you sign in).
 
+## Phase 4 — free-text intake + real estimation data
+
+The form no longer asks the customer to pick service/size/frequency. It collects
+just **Nimi, Sähköposti, Puhelinnumero** and one free-text field ("Kerro lyhyesti
+mitä toivot…"). Claude then **extracts** the structured fields from that text, and
+a deterministic lookup produces the hour + price estimate.
+
+- **Form** — `components/InquiryForm.tsx`: four fields, no dropdowns.
+  `lib/validation.ts` validates name/email/phone/`raw_request` only.
+- **Schema** (`0006`) — `inquiries` gains `raw_request`, `property_size_m2`,
+  `needs_clarification` (default false), `clarification_reason`. The AI-extracted
+  fields `service_type` / `property_size` / `postal_code` / `frequency` become
+  **nullable** (their CHECK constraints now also allow NULL).
+- **Pricing fix** (`0007`) — kotisiivous is a single **flat 39 €/h** (the old
+  39/45/49 frequency tiers are gone). ikkunanpesu 39, suursiivous 40,
+  muuttosiivous 42 unchanged. `lib/pricing.ts` no longer frequency-keys
+  kotisiivous.
+- **`time_estimates`** (`0008` schema, `0009` seed) — reference table of
+  size-bracket → **single-cleaner** hour ranges (`hours_min_1c`,
+  `hours_max_1c`) for kotisiivous, ikkunanpesu, muuttosiivous. We always assume
+  **1 cleaner** — there is no cleaner-count logic anywhere.
+- **Extraction** — `lib/extraction.ts`:
+  - `extractFromRequest(raw)` — a **separate** Claude call (structured JSON)
+    that pulls out service type, `property_size_m2`, postal code, city,
+    preferred time, frequency and condition notes. **Never invents a value** —
+    unknowns come back null. `needs_clarification` is then derived **in code**:
+    true when service type, size, or location (postal code *or* city) is missing.
+  - `computeEstimate(...)` — **deterministic** (no model): looks up the matching
+    `time_estimates` bracket for the extracted service+m², applies the 2h floor,
+    and multiplies by the `pricing_tiers` rate to get a price range. Services with
+    a rate but no bracket (e.g. suursiivous) fall back to the size-bucket default.
+- **Flow** — `lib/quote.ts` runs extraction first, persists the extracted fields
+  back onto the inquiry (so `/admin` shows them), then drafts the quote **fed by
+  extracted data** instead of dropdown values. `needs_clarification` adds a flag
+  reason; the drafter is told to ask the customer to complete missing details
+  rather than price an uncertain job. Everything else (flag logic,
+  kotitalousvähennys rules, Resend send) is unchanged.
+- **Admin** — inquiry cards show the raw request, extracted m², a "Needs
+  clarification" badge, and the clarification reason.
+
+### Testing Phase 4
+
+1. Apply migrations `0006`–`0009` (0009 is the `time_estimates` seed).
+2. Submit the free-text form (e.g. *"Tarvitsen kotisiivousta 65 neliön asuntoon
+   Helsingissä, meillä on kissa, mieluiten ensi viikolla"*).
+3. Watch the background quote generate, then open `/admin`: confirm the extracted
+   service/size/location, the deterministic hour+price estimate, and — for a
+   vague request missing size/service/location — the **Needs clarification** flag.
+
+## Out of scope (Phase 4)
+
+Google Calendar integration (Phase 5) and the Telegram bot (Phase 6).
+
 ## Out of scope (admin phase)
 
 Password reset, multiple admin users/roles, an inquiries-only view, and Phase 4

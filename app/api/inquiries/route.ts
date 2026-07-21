@@ -34,7 +34,6 @@ export async function POST(request: Request) {
   }
 
   const data = parsed.data;
-  const notes = data.notes && data.notes.length > 0 ? data.notes : null;
 
   let inquiryId: string;
   try {
@@ -42,16 +41,13 @@ export async function POST(request: Request) {
     const { data: inserted, error } = await supabase
       .from("inquiries")
       .insert({
-        service_type: data.service_type,
-        property_size: data.property_size,
-        postal_code: data.postal_code,
-        city: null, // inferred from postal code later
-        frequency: data.frequency,
+        raw_request: data.raw_request,
         name: data.name,
         email: data.email,
         phone: data.phone,
-        notes,
-        // status defaults to 'new' in the DB
+        // service_type / property_size / postal_code / frequency are extracted
+        // from raw_request by the background quote pipeline (lib/extraction.ts),
+        // so they start null. status defaults to 'new' in the DB.
       })
       .select("id")
       .single();

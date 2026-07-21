@@ -4,12 +4,19 @@ import { getSupabaseAdmin } from "./supabase";
 import { getAnthropic, QUOTE_MODEL } from "./anthropic";
 import { resolvePricing, fallbackHoursForSize } from "./pricing";
 import {
+  extractFromRequest,
+  computeEstimate,
+  describeEstimate,
+  type Estimate,
+} from "./extraction";
+import {
   isHomeService,
   serviceLabel,
   sizeLabel,
   frequencyLabel,
+  sizeBucketForM2,
 } from "./constants";
-import type { Inquiry, PricingTier, Quote } from "./types";
+import type { Inquiry, PricingTier, Quote, TimeEstimate } from "./types";
 
 // Thrown when the requested inquiry doesn't exist — the API route maps this to a 404.
 export class InquiryNotFoundError extends Error {
@@ -77,17 +84,22 @@ Ohjeet kenttiin:
 - notes_flag_reason: lyhyt suomenkielinen perustelu jos notes_flagged on true, muuten null.
 - drafted_text: kohtelias suomenkielinen tarjousluonnos asiakkaalle. Puhuttele asiakasta nimellä.
   - Jos palvelulla on kiinteä tuntihinta: mainitse tuntihinta ja että lopullinen hinta riippuu työhön kuluvasta ajasta. Mainitse ${MIN_HOURS} tunnin vähimmäistilaus jos se koskee palvelua.
-  - Jos palvelu on tarjouspohjainen (ei kiinteää tuntihintaa): kerro että laadimme kohteesta erillisen, räätälöidyn tarjouksen, äläkä keksi hintaa.
+  - Jos alla on laskettu AIKA-ARVIO (tuntiarvio ja/tai arviohinta): voit mainita sen suuntaa-antavana arviona. Käytä VAIN annettuja lukuja — älä keksi omia tunteja tai euroja.
+  - Jos palvelu on tarjouspohjainen (ei kiinteää tuntihintaa) tai aika-arviota ei voitu laskea: kerro että laadimme kohteesta erillisen, räätälöidyn tarjouksen, äläkä keksi hintaa.
+  - Jos pyynnöstä puuttuu olennaisia tietoja (merkitty HUOM-rivillä): pyydä kohteliaasti asiakasta täydentämään puuttuvat tiedot (esim. kohteen koko, palvelu tai sijainti), äläkä esitä hinta-arviota epävarmoista tiedoista.
   - Mainitse kotitalousvähennys (35 %, enintään 1 600 € / vuosi / henkilö) VAIN jos alla kerrotaan että se koskee tätä palvelua.
   - Kerro että otamme yhteyttä 24 tunnin sisällä.
-  - Älä keksi euromääräistä loppuhintaa tekstiin — hinnan laskenta tehdään erikseen.
+  - Älä keksi euromääräistä loppuhintaa tekstiin — käytä vain annettuja lukuja.
   - Allekirjoita "Ystävällisin terveisin, Cleava-tiimi".`;
 
 function buildUserContent(
   inquiry: Inquiry,
-  pricing: ReturnType<typeof resolvePricing>
+  pricing: ReturnType<typeof resolvePricing>,
+  estimate: Estimate
 ): string {
-  const homeService = isHomeService(inquiry.service_type);
+  const homeService = inquiry.service_type
+    ? isHomeService(inquiry.service_type)
+    : false;
   const rateLine =
     pricing.rateType === "hourly" && pricing.baseRate != null
       ? `Kiinteä tuntihinta: ${pricing.baseRate} €/h${
@@ -95,19 +107,31 @@ function buildUserContent(
         }`
       : "Tuntihintaa ei ole — palvelu on tarjouspohjainen (räätälöity tarjous).";
 
+  const sizeText =
+    inquiry.property_size_m2 != null
+      ? `${inquiry.property_size_m2} m²`
+      : sizeLabel(inquiry.property_size);
+
   return [
-    "SIIVOUSPYYNTÖ:",
+    "SIIVOUSPYYNTÖ (asiakkaan omin sanoin):",
+    inquiry.raw_request ? inquiry.raw_request : "(ei vapaatekstiä)",
+    "",
+    "POIMITUT TIEDOT (poimittu tekstistä — älä keksi puuttuvia):",
     `- Nimi: ${inquiry.name}`,
     `- Palvelu: ${serviceLabel(inquiry.service_type)}`,
-    `- Kohteen koko: ${sizeLabel(inquiry.property_size)}`,
+    `- Kohteen koko: ${sizeText}`,
     `- Siivousväli: ${frequencyLabel(inquiry.frequency)}`,
-    `- Postinumero: ${inquiry.postal_code}`,
-    `- Lisätiedot: ${inquiry.notes ? inquiry.notes : "(ei lisätietoja)"}`,
+    `- Sijainti: ${inquiry.postal_code ?? inquiry.city ?? "(ei tiedossa)"}`,
+    `- Toivottu ajankohta: ${inquiry.notes ? inquiry.notes : "(ei mainittu)"}`,
+    inquiry.needs_clarification
+      ? `- HUOM: tietoja puuttuu — ${inquiry.clarification_reason ?? ""}`
+      : "",
     "",
-    "HINNOITTELUTIEDOT (käytä näitä, älä keksi omia):",
+    "HINNOITTELU- JA AIKA-ARVIO (laskettu koodissa — käytä näitä, älä keksi omia):",
     `- ${rateLine}`,
+    `- ${describeEstimate(inquiry.service_type, estimate)}`,
     `- Kotitalousvähennys koskee tätä palvelua: ${
-      homeService ? "KYLLÄ" : "EI (toimisto-/kiinteistöpalvelu)"
+      homeService ? "KYLLÄ" : "EI / ei tiedossa"
     }`,
     pricing.noRateReason ? `- Huom: ${pricing.noRateReason}` : "",
   ]
@@ -131,18 +155,76 @@ export async function generateQuoteForInquiry(inquiryId: string): Promise<Quote>
   if (!inquiry) {
     throw new InquiryNotFoundError(inquiryId);
   }
-  const typedInquiry = inquiry as Inquiry;
+  let typedInquiry = inquiry as Inquiry;
+
+  // 1b. Extract structured fields from the free-text request (Phase 4). This is
+  // a separate Claude call from the drafting one below. Persist the extracted
+  // fields back onto the inquiry so /admin and the draft prompt both see them.
+  if (typedInquiry.raw_request && typedInquiry.raw_request.trim()) {
+    const extraction = await extractFromRequest(typedInquiry.raw_request);
+
+    // Fold preferred time + condition notes into the free-text notes column so
+    // downstream flag logic / display can use them.
+    const notesParts = [
+      extraction.preferred_time
+        ? `Toivottu ajankohta: ${extraction.preferred_time}`
+        : null,
+      extraction.condition_notes,
+    ].filter(Boolean);
+    const mergedNotes = notesParts.length > 0 ? notesParts.join(" | ") : null;
+
+    const extractedFields = {
+      service_type: extraction.service_type,
+      property_size_m2: extraction.property_size_m2,
+      property_size: sizeBucketForM2(extraction.property_size_m2),
+      postal_code: extraction.postal_code,
+      city: extraction.city,
+      frequency: extraction.frequency,
+      needs_clarification: extraction.needs_clarification,
+      clarification_reason: extraction.clarification_reason,
+      notes: mergedNotes,
+    };
+
+    const { error: updateError } = await supabase
+      .from("inquiries")
+      .update(extractedFields)
+      .eq("id", typedInquiry.id);
+    if (updateError) {
+      throw new Error(
+        `Failed to save extracted fields: ${updateError.message}`
+      );
+    }
+    typedInquiry = { ...typedInquiry, ...extractedFields };
+  }
 
   // 2. Load pricing tiers for this service and resolve the applicable rate.
   const { data: tiers, error: tiersError } = await supabase
     .from("pricing_tiers")
     .select("*")
-    .eq("service_type", typedInquiry.service_type);
+    .eq("service_type", typedInquiry.service_type ?? "");
 
   if (tiersError) {
     throw new Error(`Failed to load pricing tiers: ${tiersError.message}`);
   }
   const pricing = resolvePricing(typedInquiry, (tiers ?? []) as PricingTier[]);
+
+  // 2b. Deterministic hour + price estimate from the time_estimates guide.
+  const { data: estimateRows, error: estimatesError } = await supabase
+    .from("time_estimates")
+    .select("*")
+    .eq("service_type", typedInquiry.service_type ?? "");
+  if (estimatesError) {
+    throw new Error(
+      `Failed to load time estimates: ${estimatesError.message}`
+    );
+  }
+  const estimate = computeEstimate(
+    typedInquiry.service_type,
+    typedInquiry.property_size_m2,
+    pricing,
+    (estimateRows ?? []) as TimeEstimate[],
+    MIN_HOURS
+  );
 
   // 3. Ask Claude to classify + draft.
   const anthropic = getAnthropic();
@@ -156,7 +238,10 @@ export async function generateQuoteForInquiry(inquiryId: string): Promise<Quote>
     },
     system: SYSTEM_PROMPT,
     messages: [
-      { role: "user", content: buildUserContent(typedInquiry, pricing) },
+      {
+        role: "user",
+        content: buildUserContent(typedInquiry, pricing, estimate),
+      },
     ],
   });
 
@@ -181,11 +266,14 @@ export async function generateQuoteForInquiry(inquiryId: string): Promise<Quote>
   }
 
   // 4. Compute price deterministically (never trust the model for arithmetic).
-  // Whenever a fixed rate applies, always produce a starting estimate: use the
-  // model's hour estimate if given, otherwise a property-size fallback. The
-  // quote may still be flagged, but the reviewer always sees a number.
+  // Preferred source: the time_estimates bracket (priceMin = "alkaen" price).
+  // Fallback for fixed-rate services with no matching bracket (e.g. suursiivous,
+  // or a size outside the guide): the model's hour estimate, else a size-bucket
+  // default. The quote may still be flagged, but the reviewer sees a number.
   let estimatedPrice: number | null = null;
-  if (pricing.hasStandardRate && pricing.baseRate != null) {
+  if (estimate.priceMin != null) {
+    estimatedPrice = estimate.priceMin;
+  } else if (pricing.hasStandardRate && pricing.baseRate != null) {
     const rawHours =
       draft.estimated_hours != null && draft.estimated_hours > 0
         ? draft.estimated_hours
@@ -196,6 +284,12 @@ export async function generateQuoteForInquiry(inquiryId: string): Promise<Quote>
 
   // 5. Aggregate flags — hard rules in code, judgment from the model.
   const reasons: string[] = [];
+  if (typedInquiry.needs_clarification) {
+    reasons.push(
+      typedInquiry.clarification_reason ??
+        "Pyynnöstä puuttuu tietoja — vaatii tarkennuksen."
+    );
+  }
   if (pricing.rateType === "quote_only") {
     reasons.push("Aina tarjouspohjainen palvelu (ei kiinteää tuntihintaa).");
   }
