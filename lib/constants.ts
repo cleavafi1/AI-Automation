@@ -34,6 +34,44 @@ export const SERVICE_TYPE_VALUES = SERVICE_TYPES.map((o) => o.value);
 export const PROPERTY_SIZE_VALUES = PROPERTY_SIZES.map((o) => o.value);
 export const FREQUENCY_VALUES = FREQUENCIES.map((o) => o.value);
 
+// Home-related services: kotitalousvähennys (household tax deduction) applies
+// only to these. Office/commercial services are excluded.
+export const HOME_SERVICES = [
+  "kotisiivous",
+  "muuttosiivous",
+  "suursiivous",
+  "ikkunanpesu",
+] as const;
+
+// Services that are always quote-only (no fixed hourly rate) — these are
+// auto-flagged for human review.
+export const QUOTE_ONLY_SERVICES = [
+  "toimistosiivous",
+  "porrassiivous",
+  "erikoissiivous",
+] as const;
+
+export function isHomeService(serviceType: string): boolean {
+  return (HOME_SERVICES as readonly string[]).includes(serviceType);
+}
+
+export function isQuoteOnlyService(serviceType: string): boolean {
+  return (QUOTE_ONLY_SERVICES as readonly string[]).includes(serviceType);
+}
+
+// Human-readable Finnish labels for logging / prompts.
+export function serviceLabel(value: string): string {
+  return SERVICE_TYPES.find((o) => o.value === value)?.label ?? value;
+}
+
+export function sizeLabel(value: string): string {
+  return PROPERTY_SIZES.find((o) => o.value === value)?.label ?? value;
+}
+
+export function frequencyLabel(value: string): string {
+  return FREQUENCIES.find((o) => o.value === value)?.label ?? value;
+}
+
 export type ServiceType = (typeof SERVICE_TYPE_VALUES)[number];
 export type PropertySize = (typeof PROPERTY_SIZE_VALUES)[number];
 export type Frequency = (typeof FREQUENCY_VALUES)[number];
