@@ -1,0 +1,16 @@
+# Netlify configuration for this Next.js (App Router) app.
+# The @netlify/plugin-nextjs plugin turns the Next build into serverless/edge
+# functions so SSR pages, API routes, dynamic routes, and the /admin auth checks
+# all run server-side — not as static files. Netlify installs the plugin
+# automatically from the [[plugins]] block below.
+
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  # Next 14 needs Node >= 18.17; pin to an LTS Netlify supports.
+  NODE_VERSION = "20"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
