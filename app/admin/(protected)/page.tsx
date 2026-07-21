@@ -7,6 +7,7 @@ import {
 } from "@/lib/constants";
 import type { Inquiry, Quote, EmailLog } from "@/lib/types";
 import ApproveSendButton from "@/components/ApproveSendButton";
+import GenerateQuoteButton from "@/components/GenerateQuoteButton";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -59,6 +60,18 @@ export default async function AdminQuotesPage({
   const quotes = (data ?? []) as QuoteWithInquiry[];
   const totalCount = count ?? quotes.length;
   const countMismatch = totalCount !== quotes.length;
+
+  // Inquiries that don't have a quote yet (e.g. background generation failed or
+  // is still running) — surfaced so they can be generated manually.
+  const { data: inquiryData } = await supabase
+    .from("inquiries")
+    .select("*")
+    .order("created_at", { ascending: false });
+  const inquiries = (inquiryData ?? []) as Inquiry[];
+  const quotedInquiryIds = new Set(quotes.map((q) => q.inquiry_id));
+  const pendingInquiries = inquiries.filter(
+    (i) => !quotedInquiryIds.has(i.id)
+  );
 
   // Email logs → send status per quote.
   const quoteIds = quotes.map((q) => q.id);
@@ -147,6 +160,40 @@ export default async function AdminQuotesPage({
         <p className="mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800">
           ⚠ Could not load email send status: {logsResult.error.message}
         </p>
+      )}
+
+      {/* Inquiries awaiting a quote (background generation failed or pending) */}
+      {pendingInquiries.length > 0 && (
+        <section className="mt-5 rounded-xl border border-amber-200 bg-amber-50/50 p-4">
+          <h2 className="text-sm font-semibold text-amber-900">
+            Awaiting quote ({pendingInquiries.length})
+          </h2>
+          <p className="mt-0.5 text-xs text-amber-700">
+            These inquiries have no quote yet. Generate one manually if needed.
+          </p>
+          <ul className="mt-3 space-y-2">
+            {pendingInquiries.map((inq) => (
+              <li
+                key={inq.id}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-white px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <div className="font-medium text-slate-800">{inq.name}</div>
+                  <div className="text-xs text-slate-600">
+                    {serviceLabel(inq.service_type)} ·{" "}
+                    {sizeLabel(inq.property_size)} ·{" "}
+                    {frequencyLabel(inq.frequency)} · {inq.postal_code}
+                    <span className="text-slate-400">
+                      {" "}
+                      · {new Date(inq.created_at).toLocaleString("fi-FI")}
+                    </span>
+                  </div>
+                </div>
+                <GenerateQuoteButton inquiryId={inq.id} />
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
 
       {visible.length === 0 && !error && (

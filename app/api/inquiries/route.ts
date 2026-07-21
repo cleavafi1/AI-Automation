@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { inquirySchema } from "@/lib/validation";
 import { getSupabaseAdmin } from "@/lib/supabase";
+import { triggerQuoteGeneration } from "@/lib/trigger-quote";
 
 export const runtime = "nodejs";
 
@@ -35,22 +36,27 @@ export async function POST(request: Request) {
   const data = parsed.data;
   const notes = data.notes && data.notes.length > 0 ? data.notes : null;
 
+  let inquiryId: string;
   try {
     const supabase = getSupabaseAdmin();
-    const { error } = await supabase.from("inquiries").insert({
-      service_type: data.service_type,
-      property_size: data.property_size,
-      postal_code: data.postal_code,
-      city: null, // inferred from postal code later
-      frequency: data.frequency,
-      name: data.name,
-      email: data.email,
-      phone: data.phone,
-      notes,
-      // status defaults to 'new' in the DB
-    });
+    const { data: inserted, error } = await supabase
+      .from("inquiries")
+      .insert({
+        service_type: data.service_type,
+        property_size: data.property_size,
+        postal_code: data.postal_code,
+        city: null, // inferred from postal code later
+        frequency: data.frequency,
+        name: data.name,
+        email: data.email,
+        phone: data.phone,
+        notes,
+        // status defaults to 'new' in the DB
+      })
+      .select("id")
+      .single();
 
-    if (error) {
+    if (error || !inserted) {
       // Log the real error server-side; return a generic message to the client.
       console.error("[api/inquiries] insert failed:", error);
       return NextResponse.json(
@@ -58,6 +64,7 @@ export async function POST(request: Request) {
         { status: 500 }
       );
     }
+    inquiryId = inserted.id as string;
   } catch (err) {
     console.error("[api/inquiries] unexpected error:", err);
     return NextResponse.json(
@@ -65,6 +72,13 @@ export async function POST(request: Request) {
       { status: 500 }
     );
   }
+
+  // Kick off quote generation in the background (Netlify background function).
+  // We await only the 202 acknowledgment so it's dispatched before this
+  // function freezes — the customer is NOT blocked on the Claude call.
+  // triggerQuoteGeneration never throws: a failure here leaves the inquiry
+  // saved and quotable manually from /admin.
+  await triggerQuoteGeneration(request, inquiryId);
 
   return NextResponse.json(
     { message: "Kiitos! Otamme yhteyttä 24 tunnin sisällä." },
