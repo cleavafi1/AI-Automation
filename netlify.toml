@@ -9,8 +9,10 @@
   publish = ".next"
 
 [build.environment]
-  # Next 14 needs Node >= 18.17; pin to an LTS Netlify supports.
-  NODE_VERSION = "20"
+  # Node 22: @supabase/supabase-js (realtime-js) needs a global WebSocket, which
+  # only exists in Node 22+. On Node 20 createClient throws "native WebSocket
+  # not found". 22 is a Netlify-supported LTS and satisfies Next 14 too.
+  NODE_VERSION = "22"
 
 # Custom serverless functions (e.g. the quote-generation background function)
 # live here, deployed alongside the Next.js runtime.
