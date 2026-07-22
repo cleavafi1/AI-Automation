@@ -9,6 +9,7 @@ import {
 import { approveAndSend } from "./approve-send";
 import { SlotNoLongerFreeError } from "./tentative-hold";
 import { reviseQuoteDraft } from "./telegram-edit";
+import { applyStandardClosing } from "./signature";
 import { findNearestAvailableSlot } from "./booking";
 import { resolvePricing } from "./pricing";
 import { computeEstimate } from "./extraction";
@@ -102,12 +103,15 @@ async function handleApprove(
   }
 
   try {
-    await approveAndSend(quoteId);
+    const { hold } = await approveAndSend(quoteId);
     await clearButtons(chatId, messageId);
-    await sendMessage({
-      chatId,
-      text: "✅ Hyväksytty ja lähetetty asiakkaalle. Alustava varaus tehty kalenteriin (jos aika oli ehdotettu).",
-    });
+    const text =
+      hold.status === "needs_clarification"
+        ? "✅ Hyväksytty. Asiakkaalle lähetettiin TARKENNUSPYYNTÖ.\n⚠️ Kalenteriin EI tehty varausta, koska pyynnöstä puuttui tietoja (needs_clarification). Kun asiakas täydentää tiedot, tee tarjous uudelleen."
+        : hold.status === "no_slot"
+          ? "✅ Hyväksytty ja lähetetty asiakkaalle. Ei ehdotettua aikaa, joten kalenteriin ei tehty varausta."
+          : "✅ Hyväksytty ja lähetetty asiakkaalle. Alustava varaus tehty kalenteriin ehdotetulle ajalle.";
+    await sendMessage({ chatId, text });
   } catch (err) {
     if (err instanceof SlotNoLongerFreeError) {
       await sendMessage({
@@ -239,7 +243,10 @@ async function handleEdit(chatId: number, quoteId: string, instruction: string) 
     return;
   }
 
-  const updates: Record<string, unknown> = { drafted_text: revision.revised_text };
+  // Re-apply the one canonical closing block so an edit can't drop or double it.
+  const updates: Record<string, unknown> = {
+    drafted_text: applyStandardClosing(revision.revised_text),
+  };
   const notes: string[] = [];
 
   if (revision.price_changed && revision.new_price_eur != null) {

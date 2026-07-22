@@ -6,9 +6,9 @@ import { resolvePricing, fallbackHoursForSize } from "./pricing";
 import {
   extractFromRequest,
   computeEstimate,
-  describeEstimate,
   type Estimate,
 } from "./extraction";
+import { applyStandardClosing } from "./signature";
 import { findNearestAvailableSlot, type Slot } from "./booking";
 import { parseHelsinkiDateTime } from "./timezone";
 import { sendQuoteNotification, isTelegramConfigured } from "./telegram";
@@ -71,14 +71,6 @@ const QUOTE_DRAFT_JSON_SCHEMA = {
   ],
 } as const;
 
-// Company contact block appended verbatim to the end of every first offer
-// (guide §8: Y-tunnus, email, phone, cleava.fi). Language-neutral.
-const SIGNATURE_BLOCK = [
-  "Cleava Siivouspalvelut",
-  "Mansio Group Oy · Y-tunnus 3631044-9",
-  "info@cleava.fi · 045 187 8083 · cleava.fi",
-].join("\n");
-
 const SYSTEM_PROMPT = `Olet Cleavan (Mansio Group Oy, Y-tunnus 3631044-9) asiakaspalvelun avustaja. Cleava Siivouspalvelut tarjoaa siivouspalveluita pääkaupunkiseudulla (Helsinki, Espoo, Vantaa, Kauniainen; satunnaisesti kauempana esim. Kirkkonummi).
 
 Tehtäväsi on (1) laatia asiakkaalle tarjousluonnos siivouspyynnön pohjalta ja (2) luokitella pyyntö. Tavoite: luonnos on tyyliltään, rakenteeltaan ja hinnoittelultaan kuin ihmisen kirjoittama Cleavan tarjous — ei geneeristä asiakaspalvelutekstiä.
@@ -93,24 +85,32 @@ SÄVY:
 - Lyhyet, selkeät lauseet. Ei myyntikieltä, ei ylisanoja, ei huutomerkkien viljelyä.
 - Sinuttele asiakasta (suomeksi sinä-muoto) ja puhuttele ETUNIMELLÄ.
 
-TARJOUKSEN RAKENNE (8 osaa — sisällytä kaikki tässä järjestyksessä, älä ohita mitään osaa vaikka lyhentäisit sitä):
+MUOTOILU (ehdoton):
+- ÄLÄ käytä luettelomerkkejä, ajatusviivoja rivien alussa, tähtiä tai muita listamerkkejä MISSÄÄN kohdassa tekstiä.
+- Rakenteiset faktat (kesto, siivoojien määrä, hinta, saatavuus) esitetään PELKKINÄ NIMETTYINÄ RIVEINÄ muodossa "Otsikko: arvo", yksi per rivi. Alla annetaan valmis RAKENTEISET FAKTAT -lohko — sisällytä se tarjoukseen SELLAISENAAN (älä muuta lukuja, otsikoita tai muotoa). ÄLÄ toista näitä lukuja erikseen leipätekstissä.
+- Jos listaat mitä palveluun sisältyy, kirjoita joko lyhyt kappale tai pelkkiä rivejä ILMAN viivoja/luettelomerkkejä.
+- Muu selittävä teksti kirjoitetaan normaaleina kappaleina.
+
+TARJOUKSEN RAKENNE (osat tässä järjestyksessä; älä ohita mitään osaa):
 1. Tervehdys: "Hei [etunimi]," (fi) / "Hi [first name]," (en). VAIN etunimi. ÄLÄ käytä "Hyvä asiakas" tai koko nimeä.
 2. Kiitos: heti seuraava rivi. "Kiitos yhteydenotostasi!" (fi) / "Thank you for contacting Cleava Siivouspalvelut." (en).
-3. Mitä voimme tehdä: yksi rivi joka vahvistaa että työ onnistuu, sekä ehdotettu aika jos sellainen on annettu alla.
-4. Aika-arvio: ilmoita SEKÄ kokonaistyötunnit ETTÄ per-siivooja-tunnit annettujen lukujen mukaan (esim. "6–8 h yhteensä, 3–4 h / siivooja"). Lisää AINA huomautus: lopullinen aika voi olla lyhyempi tai pidempi asunnon kunnosta riippuen — arvio ei ole tae. Käytä VAIN annettuja lukuja, älä keksi tunteja.
-5. Hinta: tuntihinta per siivooja (tai kiinteä hinta), ALV sisältyy. Kerro SELVÄSTI, että siivousvälineet ja -aineet sisältyvät hintaan eikä niistä laskuteta erikseen. Käytä vain annettuja euromääriä; älä keksi loppuhintaa. Jos aika-arviossa on nettohinta kotitalousvähennyksen jälkeen, mainitse myös se (35 %, enintään 1 600 € / vuosi / henkilö).
-6. Mitä sisältyy (käytä kotisiivoukselle ja muuttosiivoukselle; jätä pois hyvin lyhyissä vastauksissa): lyhyt luettelo palvelun sisällöstä. Kotisiivous esim.: kaappien pintojen puhdistus; lattioiden imurointi ja pesu; kylpyhuoneen perusteellinen siivous ml. kaakelisaumat; pölyjen pyyhintä ja pintojen puhdistus koko asunnossa. Muuttosiivous: koko asunnon perusteellinen loppusiivous vuokranantajan/ostajan luovutuskuntoon.
-7. Varauksen vahvistuspyyntö: pyydä asiakasta vastaamaan ja ilmoittamaan: koko nimi, siivousosoite, sekä laskutusosoite jos eri kuin siivousosoite. ÄLÄ keksi muita pakollisia kenttiä. (Ks. alla laskutusosoiteohje.)
-8. Maksu + allekirjoitus: kerro että lasku lähetetään sähköpostitse työn valmistuttua (EI koskaan etukäteen), maksuehto 7 päivää. Allekirjoita "Ystävällisin terveisin," (fi) / "Best regards," (en), sitten "Cleava-tiimi". Liitä aivan loppuun alla annettu YHTEYSTIETOLOHKO SELLAISENAAN (älä muokkaa sitä).
+3. Mitä voimme tehdä: yksi rivi joka vahvistaa että työ onnistuu.
+4. RAKENTEISET FAKTAT: sisällytä alla annettu lohko sellaisenaan (kesto, siivoojat, hinta, saatavuus nimettyinä riveinä).
+5. Selitykset kappaleina: (a) lopullinen aika voi olla lyhyempi tai pidempi asunnon kunnosta riippuen — arvio ei ole tae; (b) siivousvälineet ja -aineet sisältyvät hintaan eikä niistä laskuteta erikseen. Käytä vain annettuja lukuja; älä keksi hintaa.
+6. Mitä sisältyy (kotisiivous/muuttosiivous; jätä pois hyvin lyhyissä vastauksissa): lyhyt kuvaus palvelun sisällöstä ilman luettelomerkkejä. Kotisiivous esim.: kaappien pintojen puhdistus, lattioiden imurointi ja pesu, kylpyhuoneen perusteellinen siivous ml. kaakelisaumat, pölyjen pyyhintä ja pintojen puhdistus. Muuttosiivous: koko asunnon perusteellinen loppusiivous vuokranantajan/ostajan luovutuskuntoon.
+7. Varauksen vahvistuspyyntö: pyydä asiakasta vastaamaan ja ilmoittamaan koko nimi, siivousosoite sekä laskutusosoite jos eri kuin siivousosoite. ÄLÄ keksi muita pakollisia kenttiä.
+8. Maksu: kerro että lasku lähetetään sähköpostitse työn valmistuttua (EI koskaan etukäteen), maksuehto 7 päivää.
+
+ALLEKIRJOITUS (tärkeä): ÄLÄ kirjoita mitään lopputervehdystä, allekirjoitusta tai yhteystietolohkoa (ei "Ystävällisin terveisin", "Best regards", "Cleava-tiimi" tms.). Järjestelmä lisää vakioidun allekirjoituksen automaattisesti tekstin loppuun. Lopeta viimeiseen sisältölauseeseen.
 
 LISÄOHJEET:
-- EHDOTETTU AIKA: jos alla on ehdotettu aika, esitä se EHDOTUKSENA joka vaatii asiakkaan vahvistuksen ("ehdotettu aika" / "alustava ehdotus"). ÄLÄ KOSKAAN kirjoita että aika on "varattu", "vahvistettu" tai "sovittu". Pyydä vahvistamaan tai ehdottamaan parempaa aikaa. Käytä VAIN annettua aikaa. Jos ehdotettua aikaa EI ole, älä mainitse tarkkaa aikaa; pyydä asiakasta kertomaan sopiva päivä.
+- EHDOTETTU AIKA: jos alla on ehdotettu aika, se näkyy RAKENTEISET FAKTAT -lohkon "Saatavuus"-rivillä. Käsittele sitä EHDOTUKSENA joka vaatii asiakkaan vahvistuksen — pyydä leipätekstissä vahvistamaan tai ehdottamaan parempaa aikaa. ÄLÄ KOSKAAN kirjoita että aika on "varattu", "vahvistettu" tai "sovittu". Jos Saatavuus-riviä ei ole, älä mainitse tarkkaa aikaa; pyydä asiakasta kertomaan sopiva päivä.
 - MUUTTOSIIVOUS: mainitse lyhyesti tyytyväisyystakuu — jos vuokranantajan/isännöitsijän muuttotarkastuksessa ilmenee siivoukseen liittyviä puutteita, palaamme kohteeseen ja korjaamme ne veloituksetta.
-- LISÄPALVELUT: voit mainita että saatavilla on valinnaisia lisäpalveluita (esim. uunin pesu) erillistä lisähintaa vastaan, jos asiakas haluaa — älä lisää niitä hintaan automaattisesti.
-- MAKSUTAPA (englanninkieliset/kansainväliset asiakkaat): voit tarjota MobilePayta nopeampana maksuvaihtoehtona (numero 045 187 8083).
+- LISÄPALVELUT: voit mainita että saatavilla on valinnaisia lisäpalveluita (esim. uunin pesu) erillistä lisähintaa vastaan — älä lisää niitä hintaan automaattisesti.
+- MAKSUTAPA (englanninkieliset/kansainväliset asiakkaat): voit tarjota MobilePayta nopeampana maksuvaihtoehtona (numero +358 45 187 8083).
 - LISÄAIKAHUOMAUTUS (jos annettu alla): kerro kohteliaasti, että arvio voi vaatia 1–2 lisätuntia jos kohde on tavallista likaisempi, ja että ilmoitamme AINA ETUKÄTEEN ennen lisäajan käyttöä — ei piilokuluja.
 - LASKUTUSOSOITE: jos alla lukee että laskutusosoite puuttuu tai on vajaa, pyydä täydellinen laskutusosoite (katuosoite, rakennuksen numero, asunnon/oven numero, postinumero). Jos se on jo täydellinen, voit vahvistaa sen lyhyesti äläkä pyydä uudelleen.
-- PUUTTUVAT TIEDOT (HUOM-rivi): ÄLÄ esitä hinta-arviota epävarmoista tiedoista. Säilytä tervehdys ja kiitos, kerro että autamme mielellämme, ja pyydä kohteliaasti VAIN puuttuvat tiedot (koko, palvelu tai sijainti), niin lähetämme tarkan tarjouksen ja aikaisimman vapaan ajan. Allekirjoita normaalisti.
+- PUUTTUVAT TIEDOT (HUOM-rivi): ÄLÄ esitä hinta-arviota äläkä RAKENTEISET FAKTAT -lohkoa. Säilytä tervehdys ja kiitos, kerro että autamme mielellämme, ja pyydä kohteliaasti VAIN puuttuvat tiedot (koko, palvelu tai sijainti), niin lähetämme tarkan tarjouksen ja aikaisimman vapaan ajan.
 - TARJOUSPOHJAINEN palvelu (ei kiinteää tuntihintaa) tai aika-arviota ei voitu laskea: kerro että laadimme räätälöidyn tarjouksen, äläkä keksi hintaa.
 
 KENTÄT:
@@ -118,7 +118,98 @@ KENTÄT:
 - estimated_hours: realistinen työtuntimäärä VAIN jos palvelulla on kiinteä tuntihinta, muuten null. Vähimmäistilaus ${MIN_HOURS} h.
 - notes_flagged: true jos lisätiedoissa jotain tavallisesta poikkeavaa; muuten false.
 - notes_flag_reason: lyhyt suomenkielinen perustelu jos notes_flagged on true, muuten null.
-- drafted_text: valmis tarjousluonnos asiakkaalle yllä olevan rakenteen, sävyn ja KIELEN mukaan.`;
+- drafted_text: valmis tarjousluonnos asiakkaalle yllä olevan rakenteen, muotoilun ja KIELEN mukaan (ILMAN allekirjoitusta).`;
+
+const MONTHS_EN = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+// Finnish uses a comma decimal separator (4,5); English uses a dot (4.5).
+function fmtNum(n: number, language: "fi" | "en"): string {
+  const s = String(n);
+  return language === "fi" ? s.replace(".", ",") : s;
+}
+
+function fmtNumRange(min: number, max: number, language: "fi" | "en"): string {
+  return min === max
+    ? fmtNum(min, language)
+    : `${fmtNum(min, language)}–${fmtNum(max, language)}`;
+}
+
+// Compact "Saatavuus / Availability" value for the facts block.
+function fmtSlotCompact(slot: Slot, language: "fi" | "en"): string {
+  const [y, m, d] = slot.date.split("-").map(Number);
+  const s = slot.startTime.slice(0, 5);
+  const e = slot.endTime.slice(0, 5);
+  return language === "en"
+    ? `${d} ${MONTHS_EN[m - 1]} ${y}, ${s}–${e}`
+    : `${d}.${m}.${y} klo ${s}–${e}`;
+}
+
+/**
+ * The "structured facts" block (formatting rule #3): plain labeled lines, no
+ * bullets/dashes, precomputed in code so values and format are exact. Returns
+ * null when there is no numeric estimate (quote-only / needs clarification), in
+ * which case the draft stays prose-only.
+ */
+function buildFactsBlock(
+  estimate: Estimate,
+  pricing: ReturnType<typeof resolvePricing>,
+  proposedSlot: Slot | null,
+  language: "fi" | "en"
+): string | null {
+  if (estimate.hoursMin == null || estimate.hoursMax == null) return null;
+  const isFi = language === "fi";
+  const lines: string[] = [];
+
+  // Duration: on-site wall-clock for a 2+ cleaner team, total work-hours for one.
+  const durLabel = isFi ? "Arvioitu kesto" : "Estimated duration";
+  const hoursWord = isFi ? "tuntia" : "hours";
+  if (
+    estimate.cleaners >= 2 &&
+    estimate.finishHoursMin != null &&
+    estimate.finishHoursMax != null
+  ) {
+    const onsite = fmtNumRange(estimate.finishHoursMin, estimate.finishHoursMax, language);
+    const total = fmtNumRange(estimate.hoursMin, estimate.hoursMax, language);
+    lines.push(
+      isFi
+        ? `${durLabel}: ${onsite} ${hoursWord} paikan päällä (yhteensä ${total} työtuntia)`
+        : `${durLabel}: ${onsite} ${hoursWord} on site (${total} work-hours total)`
+    );
+  } else {
+    lines.push(
+      `${durLabel}: ${fmtNumRange(estimate.hoursMin, estimate.hoursMax, language)} ${hoursWord}`
+    );
+  }
+
+  lines.push(`${isFi ? "Siivoojia" : "Cleaners"}: ${estimate.cleaners}`);
+
+  if (pricing.hasStandardRate && pricing.baseRate != null) {
+    let priceVal = `${pricing.baseRate} €/h`;
+    if (estimate.priceMin != null && estimate.priceMax != null) {
+      const range = `${fmtNumRange(estimate.priceMin, estimate.priceMax, language)} €`;
+      if (estimate.netPriceMin != null && estimate.netPriceMax != null) {
+        const net = `${fmtNumRange(estimate.netPriceMin, estimate.netPriceMax, language)} €`;
+        priceVal += isFi
+          ? ` (arvio ${range}, kotitalousvähennyksen jälkeen ${net})`
+          : ` (estimate ${range}, ${net} after household deduction)`;
+      } else {
+        priceVal += isFi ? ` (arvio ${range})` : ` (estimate ${range})`;
+      }
+    }
+    lines.push(`${isFi ? "Hinta" : "Price"}: ${priceVal}`);
+  }
+
+  if (proposedSlot) {
+    lines.push(
+      `${isFi ? "Saatavuus" : "Availability"}: ${fmtSlotCompact(proposedSlot, language)}`
+    );
+  }
+
+  return lines.join("\n");
+}
 
 function buildUserContent(
   inquiry: Inquiry,
@@ -127,6 +218,7 @@ function buildUserContent(
   proposedSlot: Slot | null,
   language: "fi" | "en"
 ): string {
+  const factsBlock = buildFactsBlock(estimate, pricing, proposedSlot, language);
   const homeService = inquiry.service_type
     ? isHomeService(inquiry.service_type)
     : false;
@@ -186,7 +278,6 @@ function buildUserContent(
     "",
     "HINNOITTELU- JA AIKA-ARVIO (laskettu koodissa — käytä näitä, älä keksi omia):",
     `- ${rateLine}`,
-    `- ${describeEstimate(inquiry.service_type, estimate)}`,
     `- Kotitalousvähennys koskee tätä palvelua: ${
       homeService ? "KYLLÄ" : "EI / ei tiedossa"
     }`,
@@ -194,36 +285,17 @@ function buildUserContent(
     billingLine,
     pricing.noRateReason ? `- Huom: ${pricing.noRateReason}` : "",
     "",
-    "EHDOTETTU AIKA (laskettu kalenterin saatavuudesta — EI vahvistettu varaus):",
-    proposedSlot
-      ? `- ${describeProposedSlot(proposedSlot)}`
-      : "- Ei ehdotettua aikaa (aikaa ei voitu laskea tai kalenteri ei ollut käytettävissä). Älä ehdota tarkkaa aikaa.",
+    factsBlock
+      ? "RAKENTEISET FAKTAT (sisällytä tarjoukseen SELLAISENAAN nimettyinä riveinä — älä muuta muotoa tai lukuja, äläkä toista näitä lukuja leipätekstissä):"
+      : "RAKENTEISET FAKTAT: ei laskettavissa (tarjouspohjainen tai tietoja puuttuu) — älä esitä kesto- tai hintarivejä äläkä keksi lukuja.",
+    factsBlock ?? "",
     "",
-    "YHTEYSTIETOLOHKO (liitä tarjouksen loppuun allekirjoituksen jälkeen sellaisenaan):",
-    SIGNATURE_BLOCK,
+    proposedSlot
+      ? "EHDOTETTU AIKA: sisältyy faktalohkon Saatavuus-riviin. Käsittele sitä ehdotuksena joka vaatii asiakkaan vahvistuksen (EI varattu)."
+      : "EHDOTETTU AIKA: ei ehdotettua aikaa — älä mainitse tarkkaa aikaa; pyydä asiakasta kertomaan sopiva päivä.",
   ]
     .filter(Boolean)
     .join("\n");
-}
-
-// Finnish weekday names for the proposed-slot description.
-const FI_WEEKDAYS = [
-  "sunnuntai",
-  "maanantai",
-  "tiistai",
-  "keskiviikko",
-  "torstai",
-  "perjantai",
-  "lauantai",
-];
-
-function describeProposedSlot(slot: Slot): string {
-  const [y, m, d] = slot.date.split("-").map(Number);
-  // Weekday of the Helsinki calendar date (tz-independent via a UTC anchor).
-  const weekday = FI_WEEKDAYS[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
-  const dd = String(d).padStart(2, "0");
-  const mm = String(m).padStart(2, "0");
-  return `${weekday} ${dd}.${mm}.${y} klo ${slot.startTime}–${slot.endTime}`;
 }
 
 export async function generateQuoteForInquiry(inquiryId: string): Promise<Quote> {
@@ -449,12 +521,14 @@ export async function generateQuoteForInquiry(inquiryId: string): Promise<Quote>
   const isFlagged = uniqueReasons.length > 0;
   const flagReason = isFlagged ? uniqueReasons.join(" ") : null;
 
-  // 6. Persist the draft.
+  // 6. Persist the draft. The model is told NOT to write a sign-off; we append
+  // the one canonical closing block in code so it is exact and never doubled.
+  const draftedText = applyStandardClosing(draft.drafted_text);
   const { data: inserted, error: insertError } = await supabase
     .from("quotes")
     .insert({
       inquiry_id: typedInquiry.id,
-      drafted_text: draft.drafted_text,
+      drafted_text: draftedText,
       estimated_price_eur: estimatedPrice,
       is_flagged: isFlagged,
       flag_reason: flagReason,

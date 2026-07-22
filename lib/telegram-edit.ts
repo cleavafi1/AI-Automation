@@ -55,7 +55,9 @@ EHDOTTOMAT SÄÄNNÖT:
 - Toteuta vain se muutos, jota henkilökunta nimenomaisesti pyytää.
 - Säilytä KAIKKI muut faktat ennallaan (hinta, päivä, kellonaika, kesto, osoite/sijainti, palvelutyyppi, asiakkaan nimi). Älä muuta mitään näistä, ellei sitä nimenomaisesti pyydetä.
 - Älä keksi uusia faktoja. Jos pyyntö on epäselvä, tee mahdollisimman pieni järkevä muutos.
-- Säilytä Cleavan sävy: kohtelias, asiallinen, ei ylisanoja. Allekirjoita "Ystävällisin terveisin, Cleava-tiimi".
+- Säilytä Cleavan sävy: kohtelias, asiallinen, ei ylisanoja.
+- ÄLÄ kirjoita lopputervehdystä, allekirjoitusta tai yhteystietolohkoa ("Ystävällisin terveisin", "Cleava-tiimi" tms.) — järjestelmä lisää vakioidun allekirjoituksen automaattisesti. Jos nykyisessä tekstissä on allekirjoitus, jätä se pois uudelleenkirjoituksesta.
+- Säilytä muotoilu: rakenteiset faktat (kesto, siivoojat, hinta, saatavuus) pysyvät nimettyinä riveinä muodossa "Otsikko: arvo", EI luettelomerkkejä tai viivoja.
 - Jos ehdotettu aika on tekstissä, pidä se edelleen EHDOTUKSENA (esim. "ehdotettu aika"), ei vahvistettuna varauksena.
 
 Rakenteiset kentät:

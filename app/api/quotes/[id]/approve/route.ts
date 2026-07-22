@@ -52,7 +52,18 @@ export async function POST(
   // 2. Tentative calendar hold (final re-check + event creation).
   try {
     const hold = await placeTentativeHold(quoteId);
-    return NextResponse.json({ quote: { id: quoteId }, hold }, { status: 200 });
+    // Clarification-request quotes must not book a slot — the client still sends
+    // the email, but we tell the reviewer why no calendar hold was made.
+    const message =
+      hold.status === "needs_clarification"
+        ? "Tarkennuspyyntö: pyynnöstä puuttui tietoja, joten kalenteriin EI tehty varausta. Lähetetään vain tarkennusviesti asiakkaalle."
+        : hold.status === "no_slot"
+          ? "Ei ehdotettua aikaa — kalenteriin ei tehty varausta."
+          : "Alustava varaus tehty kalenteriin.";
+    return NextResponse.json(
+      { quote: { id: quoteId }, hold, message },
+      { status: 200 }
+    );
   } catch (err) {
     if (err instanceof QuoteNotFoundError) {
       return NextResponse.json({ error: "Quote not found." }, { status: 404 });

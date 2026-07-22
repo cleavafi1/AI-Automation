@@ -22,6 +22,7 @@ export class QuoteNotFoundError extends Error {
 
 export type HoldResult =
   | { status: "no_slot" } // quote has no proposed appointment — nothing to hold
+  | { status: "needs_clarification" } // inquiry incomplete — no booking allowed
   | { status: "already_held"; eventId: string } // idempotent: already placed
   | { status: "held"; eventId: string };
 
@@ -47,6 +48,26 @@ export async function placeTentativeHold(quoteId: string): Promise<HoldResult> {
   if (!quote) throw new QuoteNotFoundError(quoteId);
   const typedQuote = quote as Quote;
 
+  // Load the inquiry up front — needed for the clarification guard below, and
+  // later for the event title/location.
+  const { data: inquiry, error: inquiryError } = await supabase
+    .from("inquiries")
+    .select("*")
+    .eq("id", typedQuote.inquiry_id)
+    .maybeSingle();
+  if (inquiryError) {
+    throw new Error(`Failed to load inquiry: ${inquiryError.message}`);
+  }
+  const typedInquiry = (inquiry ?? null) as Inquiry | null;
+
+  // HARD GUARD: an inquiry still missing critical details (needs_clarification)
+  // must NEVER reserve a slot or create a calendar event, even if a tentative
+  // time was proposed at generation. Approving such a quote only sends the
+  // clarification-request email. Return early so no hold is placed.
+  if (typedInquiry?.needs_clarification) {
+    return { status: "needs_clarification" };
+  }
+
   // Idempotent — don't create a second event on resend/retry.
   if (typedQuote.calendar_event_id) {
     return { status: "already_held", eventId: typedQuote.calendar_event_id };
@@ -70,17 +91,6 @@ export async function placeTentativeHold(quoteId: string): Promise<HoldResult> {
       `Quote ${quoteId} has malformed proposed times: ${typedQuote.proposed_start_time} / ${typedQuote.proposed_end_time}`
     );
   }
-
-  // Load the inquiry for the location (Uusimaa gap) + event title.
-  const { data: inquiry, error: inquiryError } = await supabase
-    .from("inquiries")
-    .select("*")
-    .eq("id", typedQuote.inquiry_id)
-    .maybeSingle();
-  if (inquiryError) {
-    throw new Error(`Failed to load inquiry: ${inquiryError.message}`);
-  }
-  const typedInquiry = (inquiry ?? null) as Inquiry | null;
 
   // Final re-check against the live calendar.
   const free = await isSlotStillFree({ date, startTime, endTime });

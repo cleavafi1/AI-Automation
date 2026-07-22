@@ -17,9 +17,11 @@ export default function ApproveSendButton({
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   async function handleClick() {
     setError(null);
+    setNotice(null);
 
     if (isFlagged) {
       const ok = window.confirm(
@@ -34,10 +36,17 @@ export default function ApproveSendButton({
       const approveRes = await fetch(`/api/quotes/${quoteId}/approve`, {
         method: "POST",
       });
+      const approveData = await approveRes.json().catch(() => null);
       if (!approveRes.ok) {
-        const data = await approveRes.json().catch(() => null);
-        setError(data?.error ?? "Approve failed.");
+        setError(approveData?.error ?? "Approve failed.");
         return;
+      }
+      // Incomplete inquiry: no calendar hold was made — surface why.
+      if (approveData?.hold?.status === "needs_clarification") {
+        setNotice(
+          approveData?.message ??
+            "Tarkennuspyyntö lähetetty — kalenteriin ei tehty varausta (tietoja puuttui)."
+        );
       }
 
       // 2. Send the offer.
@@ -71,6 +80,7 @@ export default function ApproveSendButton({
           {loading ? "…" : "resend"}
         </button>
         {error && <div className="mt-1 text-red-600">{error}</div>}
+        {notice && <div className="mt-1 text-amber-700">{notice}</div>}
       </div>
     );
   }
@@ -101,6 +111,7 @@ export default function ApproveSendButton({
             : "Approve & send"}
       </button>
       {error && <div className="mt-1 text-xs text-red-600">{error}</div>}
+      {notice && <div className="mt-1 text-xs text-amber-700">{notice}</div>}
     </div>
   );
 }
