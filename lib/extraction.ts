@@ -33,6 +33,8 @@ const RawExtractionSchema = z.object({
   date_is_deadline: z.boolean().nullable(),
   frequency: z.string().nullable(),
   condition_notes: z.string().nullable(),
+  // Language the customer wrote in ("fi" or "en") — the reply must match it.
+  language: z.string().nullable(),
   // Billing address components (for invoicing).
   billing_street: z.string().nullable(),
   billing_building_number: z.string().nullable(),
@@ -55,6 +57,7 @@ const RAW_EXTRACTION_JSON_SCHEMA = {
     date_is_deadline: { type: ["boolean", "null"] },
     frequency: { type: ["string", "null"] },
     condition_notes: { type: ["string", "null"] },
+    language: { type: ["string", "null"] },
     billing_street: { type: ["string", "null"] },
     billing_building_number: { type: ["string", "null"] },
     billing_apartment: { type: ["string", "null"] },
@@ -70,6 +73,7 @@ const RAW_EXTRACTION_JSON_SCHEMA = {
     "date_is_deadline",
     "frequency",
     "condition_notes",
+    "language",
     "billing_street",
     "billing_building_number",
     "billing_apartment",
@@ -90,6 +94,8 @@ export type Extraction = {
   date_is_deadline: boolean;
   frequency: string | null;
   condition_notes: string | null;
+  // Reply language, matched to the customer's message. Defaults to "fi".
+  language: "fi" | "en";
   needs_clarification: boolean;
   clarification_reason: string | null;
   // Billing address (for invoicing).
@@ -115,6 +121,7 @@ Kentät:
 - date_is_deadline: true JOS requested_date on takaraja / määräpäivä eli viimeisin hyväksyttävä päivä ("ennen", "mennessä", "viimeistään", "before", "by", "no later than"). false jos päivä on toivottu/tavoitepäivä ("15.8.", "ensi maanantaina", "27.7. tai 28.7."). Jos requested_date on null, palauta false.
 - frequency: siivousväli. Palauta täsmälleen yksi näistä koodeista tai null: ${FREQUENCY_VALUES.join(", ")}. (kertaluontoinen = kertaluontoinen, viikoittain = viikoittain, joka_toinen_viikko = joka toinen viikko, kuukausittain = kuukausittain.)
 - condition_notes: maininnat kunnosta, lemmikeistä, kulusta/avaimista, erikoistoiveista tai lisätöistä (esim. "kaksi kissaa", "uuni pestävä", "avain saatavilla ovimatolta"). Muuten null.
+- language: asiakkaan viestin kieli. Palauta "fi" jos viesti on suomeksi, "en" jos englanniksi. Jos kieltä ei voi päätellä tai se on jokin muu, palauta "fi".
 - billing_street: laskutusosoitteen kadunnimi jos mainittu (esim. "Mannerheimintie"), muuten null.
 - billing_building_number: rakennuksen numero jos mainittu (esim. "5" tai "12 B"), muuten null.
 - billing_apartment: asunnon/oven numero jos mainittu (esim. "A 12", "as. 7", "C 34"), muuten null.
@@ -217,6 +224,9 @@ export function normalizeExtraction(raw: RawExtraction): Extraction {
   // Only meaningful when we actually have a concrete requested_date.
   const date_is_deadline = requested_date != null && raw.date_is_deadline === true;
 
+  // Reply language: only "en" when explicitly detected, else Finnish default.
+  const language: "fi" | "en" = raw.language === "en" ? "en" : "fi";
+
   const clean = (v: string | null) => (v && v.trim() ? v.trim() : null);
   const billing_street = clean(raw.billing_street);
   const billing_building_number = clean(raw.billing_building_number);
@@ -253,6 +263,7 @@ export function normalizeExtraction(raw: RawExtraction): Extraction {
     date_is_deadline,
     frequency,
     condition_notes,
+    language,
     needs_clarification,
     clarification_reason,
     billing_street,
@@ -422,15 +433,36 @@ export function describeEstimate(
     return "Tuntiarviota ei voitu laskea (koko tai palvelu puuttuu, tai palvelulle ei ole arviotaulukkoa).";
   }
   const lines: string[] = [];
-  lines.push(
-    `${serviceLabel(serviceType)}: kokonaistyöaika ${fmtRange(
-      estimate.hoursMin,
-      estimate.hoursMax,
-      "h"
-    )} (hinnan peruste; yhden siivoojan työtunnit yhteensä).`
-  );
+  // Total work-hours is the price basis. When ≥2 cleaners, also give the
+  // per-cleaner hours (total ÷ cleaners) — the guide wants both stated, e.g.
+  // "6–8 h yhteensä (3–4 h / siivooja)".
+  if (
+    estimate.cleaners >= 2 &&
+    estimate.finishHoursMin != null &&
+    estimate.finishHoursMax != null
+  ) {
+    lines.push(
+      `${serviceLabel(serviceType)}: kokonaistyöaika ${fmtRange(
+        estimate.hoursMin,
+        estimate.hoursMax,
+        "h"
+      )} yhteensä (${fmtRange(
+        estimate.finishHoursMin,
+        estimate.finishHoursMax,
+        "h"
+      )} / siivooja, kun paikalla on ${estimate.cleaners} siivoojaa). Hinta perustuu kokonaistyötunteihin ja pysyy samana siivoojien määrästä riippumatta.`
+    );
+  } else {
+    lines.push(
+      `${serviceLabel(serviceType)}: kokonaistyöaika ${fmtRange(
+        estimate.hoursMin,
+        estimate.hoursMax,
+        "h"
+      )} (yksi siivooja).`
+    );
+  }
   if (estimate.priceMin != null && estimate.priceMax != null) {
-    lines.push(`Arviohinta: noin ${fmtRange(estimate.priceMin, estimate.priceMax, "€")}.`);
+    lines.push(`Arviohinta: noin ${fmtRange(estimate.priceMin, estimate.priceMax, "€")} (sis. ALV).`);
   }
   if (estimate.netPriceMin != null && estimate.netPriceMax != null) {
     lines.push(
@@ -439,19 +471,6 @@ export function describeEstimate(
         estimate.netPriceMax,
         "€"
       )}.`
-    );
-  }
-  if (
-    estimate.cleaners >= 2 &&
-    estimate.finishHoursMin != null &&
-    estimate.finishHoursMax != null
-  ) {
-    lines.push(
-      `Lähetämme ${estimate.cleaners} siivoojaa, jolloin työ valmistuu paikan päällä noin ${fmtRange(
-        estimate.finishHoursMin,
-        estimate.finishHoursMax,
-        "tunnissa"
-      )} (hinta pysyy samana, koska se perustuu kokonaistyötunteihin).`
     );
   }
   return lines.join(" ");
