@@ -1,6 +1,6 @@
 import { getSupabaseAdmin } from "./supabase";
 import { sendEmail } from "./email";
-import { replyToAddressForQuote } from "./reply-address";
+import { replyToIfEnabled } from "./reply-address";
 import type { Inquiry, Quote, EmailLog } from "./types";
 
 // Typed errors so the API route can map to precise HTTP statuses.
@@ -92,8 +92,9 @@ export async function sendOfferForQuote(
       to: toAddress,
       subject,
       text: body,
-      // Per-quote reply-to so the customer's reply maps back to this quote.
-      replyTo: replyToAddressForQuote(typedQuote.id),
+      // Per-quote reply-to so the customer's reply maps back to this quote —
+      // only once inbound handling is configured (else replies would bounce).
+      replyTo: replyToIfEnabled(typedQuote.id),
     });
     resendMessageId = result.id;
   } catch (err) {

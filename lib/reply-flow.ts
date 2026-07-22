@@ -1,6 +1,6 @@
 import { getSupabaseAdmin } from "./supabase";
 import { sendEmail } from "./email";
-import { replyToAddressForQuote } from "./reply-address";
+import { replyToIfEnabled } from "./reply-address";
 import {
   insertConversation,
   loadConversationHistory,
@@ -271,7 +271,7 @@ export async function approveConversationReply(
     to: inquiry.email,
     subject: row.subject ?? "Cleava",
     text: row.body_text ?? "",
-    replyTo: replyToAddressForQuote(quote.id),
+    replyTo: replyToIfEnabled(quote.id),
   });
 
   await supabase
