@@ -1,5 +1,6 @@
 import { getSupabaseAdmin } from "./supabase";
 import { sendEmail } from "./email";
+import { replyToAddressForQuote } from "./reply-address";
 import type { Inquiry, Quote, EmailLog } from "./types";
 
 // Typed errors so the API route can map to precise HTTP statuses.
@@ -87,7 +88,13 @@ export async function sendOfferForQuote(
   let sendErrorMessage: string | null = null;
 
   try {
-    const result = await sendEmail({ to: toAddress, subject, text: body });
+    const result = await sendEmail({
+      to: toAddress,
+      subject,
+      text: body,
+      // Per-quote reply-to so the customer's reply maps back to this quote.
+      replyTo: replyToAddressForQuote(typedQuote.id),
+    });
     resendMessageId = result.id;
   } catch (err) {
     status = "failed";

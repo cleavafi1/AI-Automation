@@ -286,6 +286,9 @@ export async function isSlotStillFree(params: {
   startTime: string;
   endTime: string;
   now?: Date;
+  // Exclude one event id from the checks — used when confirming our OWN tentative
+  // hold, which otherwise counts as a conflict against its own slot.
+  ignoreEventId?: string;
 }): Promise<boolean> {
   const now = params.now ?? new Date();
   const startInstant = parseHelsinkiDateTime(params.date, params.startTime);
@@ -296,10 +299,13 @@ export async function isSlotStillFree(params: {
   // Fetch a wide-enough window to cover the FULL Helsinki calendar day (needed
   // for the daily-cap count) plus the neighbouring-gap check. ±14h around a
   // 08:00–18:00 slot safely spans midnight-to-midnight of that day.
-  const events = await listEvents(
+  const allEvents = await listEvents(
     new Date(startInstant.getTime() - 14 * 60 * 60_000),
     new Date(endInstant.getTime() + 14 * 60 * 60_000)
   );
+  const events = params.ignoreEventId
+    ? allEvents.filter((e) => e.id !== params.ignoreEventId)
+    : allEvents;
 
   // Daily cap (exclude our own already-placed event for this slot is not needed
   // here — we only place the hold once, guarded by calendar_event_id upstream).

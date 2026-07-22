@@ -1,5 +1,5 @@
 import { serviceLabel } from "./constants";
-import type { Inquiry, Quote } from "./types";
+import type { Inquiry, Quote, ReplyIntent } from "./types";
 
 // Minimal Telegram Bot API client + the staff quote-notification message.
 // Server-only. Uses fetch against the Bot API; no third-party dependency.
@@ -81,6 +81,62 @@ export function quoteActionKeyboard(quoteId: string) {
       ],
     ],
   };
+}
+
+// Phase 7: the same three-button flow, but for an inbound-reply review. The
+// callback_data uses a "cv*" prefix + the email_conversations row id so the
+// webhook can tell a reply approval apart from an original-offer approval.
+export function conversationActionKeyboard(conversationId: string) {
+  return {
+    inline_keyboard: [
+      [
+        { text: "✅ Approve", callback_data: `cvapprove:${conversationId}` },
+        { text: "❌ Decline", callback_data: `cvdecline:${conversationId}` },
+        { text: "✏️ Custom", callback_data: `cvcustom:${conversationId}` },
+      ],
+    ],
+  };
+}
+
+const INTENT_LABEL: Record<ReplyIntent, string> = {
+  acceptance: "✅ HYVÄKSYNTÄ — asiakas hyväksyy ajan",
+  reschedule_request: "🔄 AJANMUUTOSPYYNTÖ",
+  question: "❓ KYSYMYS",
+  decline: "🚫 PERUUTUS / ei halua edetä",
+  unclear: "⚠️ EPÄSELVÄ — vaatii erityistä huomiota",
+};
+
+/** The staff-facing review body for a classified inbound reply + drafted answer. */
+export function buildReplyReviewText(params: {
+  inquiry: Inquiry;
+  intent: ReplyIntent;
+  reasoning: string;
+  customerReply: string;
+  draftedResponse: string;
+  newSlotText?: string | null;
+}): string {
+  const { inquiry, intent, reasoning, customerReply, draftedResponse, newSlotText } =
+    params;
+  return [
+    "📨 Uusi asiakasvastaus tarkistettavaksi",
+    "",
+    `Asiakas: ${inquiry.name}`,
+    `Palvelu: ${serviceLabel(inquiry.service_type)}`,
+    `Luokitus: ${INTENT_LABEL[intent]}`,
+    reasoning ? `Perustelu: ${reasoning}` : "",
+    newSlotText ? `Uusi ehdotettu aika: ${newSlotText}` : "",
+    intent === "unclear"
+      ? "⚠️ HUOMIO: luokitus epävarma — tarkista viesti huolellisesti."
+      : "",
+    "",
+    "— Asiakkaan viesti —",
+    customerReply,
+    "",
+    "— Ehdotettu vastaus asiakkaalle —",
+    draftedResponse,
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 export async function sendMessage(params: {
@@ -232,5 +288,35 @@ export async function sendQuoteNotification(
     }
   }
 
+  return primaryMessageId;
+}
+
+/**
+ * Send a classified-reply review (Phase 7) to all staff with the same
+ * Approve/Decline/Custom buttons, wired to the conversation row. Returns the
+ * primary recipient's message_id. Mirrors sendQuoteNotification's fan-out.
+ */
+export async function sendReplyReviewNotification(
+  conversationId: string,
+  text: string
+): Promise<number> {
+  const { staffChatIds } = getTelegramConfig();
+  const replyMarkup = conversationActionKeyboard(conversationId);
+  const [primaryId, ...others] = staffChatIds;
+  const primaryMessageId = await sendMessage({
+    chatId: primaryId,
+    text,
+    replyMarkup,
+  });
+  for (const chatId of others) {
+    try {
+      await sendMessage({ chatId, text, replyMarkup });
+    } catch (err) {
+      console.error(
+        `[telegram] failed to send reply review to staff chat ${chatId}:`,
+        err
+      );
+    }
+  }
   return primaryMessageId;
 }

@@ -1,6 +1,11 @@
 import { getSupabaseAdmin } from "./supabase";
-import { isSlotStillFree } from "./booking";
-import { createTaggedEvent } from "./calendar";
+import { isSlotStillFree, type Slot } from "./booking";
+import {
+  createTaggedEvent,
+  getEventById,
+  updateEvent,
+  deleteEvent,
+} from "./calendar";
 import { normalizeHHMM } from "./timezone";
 import { serviceLabel } from "./constants";
 import type { Inquiry, Quote } from "./types";
@@ -134,6 +139,158 @@ export async function placeTentativeHold(quoteId: string): Promise<HoldResult> {
       `Tentative event ${eventId} created but failed to save id on quote ${quoteId}: ${updateError.message}`
     );
   }
+
+  return { status: "held", eventId };
+}
+
+async function loadQuoteAndInquiry(
+  quoteId: string
+): Promise<{ quote: Quote; inquiry: Inquiry | null }> {
+  const supabase = getSupabaseAdmin();
+  const { data: quote, error } = await supabase
+    .from("quotes")
+    .select("*")
+    .eq("id", quoteId)
+    .maybeSingle();
+  if (error) throw new Error(`Failed to load quote: ${error.message}`);
+  if (!quote) throw new QuoteNotFoundError(quoteId);
+  const typedQuote = quote as Quote;
+  const { data: inq } = await supabase
+    .from("inquiries")
+    .select("*")
+    .eq("id", typedQuote.inquiry_id)
+    .maybeSingle();
+  return { quote: typedQuote, inquiry: (inq ?? null) as Inquiry | null };
+}
+
+export type ConfirmResult =
+  | { status: "confirmed"; eventId: string }
+  | { status: "confirmed_no_event" } // nothing to book (no proposed slot)
+  | { status: "already_confirmed" };
+
+/**
+ * Convert a tentative hold into a CONFIRMED booking (Phase 7, on an approved
+ * acceptance reply). Does a final availability re-check first — ignoring our own
+ * tentative event so it doesn't count against its own slot — then rewrites the
+ * event title to "Confirmed". Throws SlotNoLongerFreeError if a conflicting
+ * booking appeared in the meantime.
+ */
+export async function confirmBooking(quoteId: string): Promise<ConfirmResult> {
+  const supabase = getSupabaseAdmin();
+  const { quote, inquiry } = await loadQuoteAndInquiry(quoteId);
+
+  if (quote.status === "confirmed") return { status: "already_confirmed" };
+
+  const date = quote.proposed_date;
+  const startTime = quote.proposed_start_time
+    ? normalizeHHMM(quote.proposed_start_time)
+    : null;
+  const endTime = quote.proposed_end_time
+    ? normalizeHHMM(quote.proposed_end_time)
+    : null;
+
+  // No concrete slot to confirm — just mark the quote confirmed.
+  if (!date || !startTime || !endTime) {
+    await supabase.from("quotes").update({ status: "confirmed" }).eq("id", quoteId);
+    return { status: "confirmed_no_event" };
+  }
+
+  const name = inquiry?.name ?? "asiakas";
+  const service = serviceLabel(inquiry?.service_type ?? null);
+  const summary = `Confirmed – ${name} – ${service}`;
+  const description = [
+    "Vahvistettu varaus (asiakas hyväksynyt).",
+    `Palvelu: ${service}`,
+    inquiry?.property_size_m2 != null ? `Koko: ${inquiry.property_size_m2} m²` : null,
+    `Quote ID: ${quoteId}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  if (quote.calendar_event_id) {
+    // Final re-check ignoring our own tentative event; still exists → confirm it.
+    const free = await isSlotStillFree({
+      date,
+      startTime,
+      endTime,
+      ignoreEventId: quote.calendar_event_id,
+    });
+    if (!free) throw new SlotNoLongerFreeError();
+    const existing = await getEventById(quote.calendar_event_id);
+    if (existing) {
+      await updateEvent(quote.calendar_event_id, { summary, description });
+      await supabase.from("quotes").update({ status: "confirmed" }).eq("id", quoteId);
+      return { status: "confirmed", eventId: quote.calendar_event_id };
+    }
+    // The tentative event vanished — fall through to create a fresh confirmed one.
+  }
+
+  // No existing hold: re-check the slot is free, then create the confirmed event.
+  const free = await isSlotStillFree({ date, startTime, endTime });
+  if (!free) throw new SlotNoLongerFreeError();
+  const eventId = await createTaggedEvent({
+    summary,
+    description,
+    date,
+    startTime,
+    endTime,
+  });
+  await supabase
+    .from("quotes")
+    .update({ status: "confirmed", calendar_event_id: eventId })
+    .eq("id", quoteId);
+  return { status: "confirmed", eventId };
+}
+
+/**
+ * Move the tentative hold to a new slot (Phase 7, on an approved reschedule
+ * reply). Releases the old tentative event, re-checks the new slot, places a
+ * fresh tentative hold, and updates the quote's proposed appointment. The new
+ * time remains a PROPOSAL (not confirmed) until the customer accepts it.
+ */
+export async function rescheduleTentativeHold(
+  quoteId: string,
+  slot: Slot
+): Promise<HoldResult> {
+  const supabase = getSupabaseAdmin();
+  const { quote, inquiry } = await loadQuoteAndInquiry(quoteId);
+
+  const free = await isSlotStillFree({
+    date: slot.date,
+    startTime: slot.startTime,
+    endTime: slot.endTime,
+    ignoreEventId: quote.calendar_event_id ?? undefined,
+  });
+  if (!free) throw new SlotNoLongerFreeError();
+
+  // Release the superseded hold before placing the new one.
+  if (quote.calendar_event_id) {
+    await deleteEvent(quote.calendar_event_id);
+  }
+
+  const name = inquiry?.name ?? "asiakas";
+  const service = serviceLabel(inquiry?.service_type ?? null);
+  const eventId = await createTaggedEvent({
+    summary: `Tentative – ${name} – Quote awaiting acceptance`,
+    description: [
+      "Alustava (tentative) varaus — uusi ehdotettu aika, odottaa asiakkaan vahvistusta.",
+      `Palvelu: ${service}`,
+      `Quote ID: ${quoteId}`,
+    ].join("\n"),
+    date: slot.date,
+    startTime: slot.startTime,
+    endTime: slot.endTime,
+  });
+
+  await supabase
+    .from("quotes")
+    .update({
+      proposed_date: slot.date,
+      proposed_start_time: slot.startTime,
+      proposed_end_time: slot.endTime,
+      calendar_event_id: eventId,
+    })
+    .eq("id", quoteId);
 
   return { status: "held", eventId };
 }

@@ -56,7 +56,7 @@ export type Quote = {
   estimated_price_eur: number | null;
   is_flagged: boolean;
   flag_reason: string | null;
-  status: "draft" | "approved" | "rejected";
+  status: "draft" | "approved" | "rejected" | "declined" | "confirmed";
   // Proposed appointment (Phase 5) — Europe/Helsinki wall-clock. A proposal
   // requiring confirmation, not a booking.
   proposed_date: string | null; // "YYYY-MM-DD"
@@ -73,8 +73,38 @@ export type Quote = {
 export type TelegramPendingEdit = {
   id: string;
   chat_id: number;
+  // Set for original-offer follow-ups; null for conversation-reply follow-ups.
+  quote_id: string | null;
+  // Set for conversation-reply follow-ups (Phase 7).
+  conversation_id: string | null;
+  kind: "edit" | "decline_reason" | "reply_edit" | "reply_decline_reason";
+  created_at: string;
+};
+
+// Phase 7: one message in a per-quote email conversation (either direction).
+// Outbound rows are drafted replies awaiting Telegram approval; inbound rows are
+// the customer's received replies.
+export type ReplyIntent =
+  | "acceptance"
+  | "reschedule_request"
+  | "question"
+  | "decline"
+  | "unclear";
+
+export type EmailConversation = {
+  id: string;
   quote_id: string;
-  kind: "edit" | "decline_reason";
+  direction: "inbound" | "outbound";
+  from_address: string | null;
+  subject: string | null;
+  body_text: string | null;
+  resend_email_id: string | null;
+  classified_intent: ReplyIntent | null;
+  telegram_message_id: number | null;
+  status: "pending_review" | "approved" | "declined";
+  proposed_date: string | null; // "YYYY-MM-DD"
+  proposed_start_time: string | null; // "HH:MM[:SS]"
+  proposed_end_time: string | null; // "HH:MM[:SS]"
   created_at: string;
 };
 

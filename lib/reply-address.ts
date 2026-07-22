@@ -1,0 +1,27 @@
+// Per-quote reply-to addressing for the conversational email loop (Phase 7).
+//
+// IMPORTANT: replies are handled on a DEDICATED subdomain (reply.cleava.fi),
+// never the root cleava.fi — the root's MX records run ImprovMX for Cleava's
+// real inbox and must not be touched. Resend Inbound owns this subdomain only.
+export const REPLY_EMAIL_DOMAIN =
+  process.env.REPLY_EMAIL_DOMAIN?.trim() || "reply.cleava.fi";
+
+/**
+ * The reply-to address for a quote's customer emails. Every inbound reply lands
+ * on this address, so the quote id is recoverable directly from the recipient —
+ * no fuzzy subject-line matching.
+ */
+export function replyToAddressForQuote(quoteId: string): string {
+  return `quote-${quoteId}@${REPLY_EMAIL_DOMAIN}`;
+}
+
+/**
+ * Recover the quote id from an inbound "to" address. Accepts a bare address or
+ * a "Name <addr>" form. Returns null when it doesn't match our pattern.
+ */
+export function quoteIdFromReplyAddress(toAddress: string): string | null {
+  const m = /quote-([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})@/.exec(
+    toAddress
+  );
+  return m ? m[1].toLowerCase() : null;
+}

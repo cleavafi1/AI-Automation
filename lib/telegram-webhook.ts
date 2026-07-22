@@ -5,16 +5,31 @@ import {
   answerCallbackQuery,
   clearButtons,
   sendQuoteNotification,
+  buildReplyReviewText,
+  sendReplyReviewNotification,
 } from "./telegram";
 import { approveAndSend } from "./approve-send";
 import { SlotNoLongerFreeError } from "./tentative-hold";
 import { reviseQuoteDraft } from "./telegram-edit";
+import { reviseReplyDraft } from "./reply-draft";
+import {
+  approveConversationReply,
+  declineConversationReply,
+} from "./reply-flow";
 import { applyStandardClosing } from "./signature";
 import { findNearestAvailableSlot } from "./booking";
 import { resolvePricing } from "./pricing";
 import { computeEstimate } from "./extraction";
 import { parseHelsinkiDateTime, normalizeHHMM } from "./timezone";
-import type { Inquiry, PricingTier, Quote, TelegramPendingEdit, TimeEstimate } from "./types";
+import type {
+  EmailConversation,
+  Inquiry,
+  PricingTier,
+  Quote,
+  ReplyIntent,
+  TelegramPendingEdit,
+  TimeEstimate,
+} from "./types";
 
 // Stateless Telegram webhook handling. Two update kinds:
 //   • callback_query — an inline button press (approve/decline/custom)
@@ -63,13 +78,18 @@ async function handleCallback(cq: NonNullable<TgUpdate["callback_query"]>) {
   await answerCallbackQuery(cq.id).catch(() => {});
   if (!isStaffChat(chatId) || !cq.data || !cq.message) return;
 
-  const [action, quoteId] = cq.data.split(":");
-  if (!quoteId) return;
+  const [action, id] = cq.data.split(":");
+  if (!id) return;
   const messageId = cq.message.message_id;
 
-  if (action === "approve") return handleApprove(chatId!, messageId, quoteId);
-  if (action === "decline") return handleDecline(chatId!, messageId, quoteId);
-  if (action === "custom") return handleCustom(chatId!, quoteId);
+  // Original-offer approval flow.
+  if (action === "approve") return handleApprove(chatId!, messageId, id);
+  if (action === "decline") return handleDecline(chatId!, messageId, id);
+  if (action === "custom") return handleCustom(chatId!, id);
+  // Phase 7: conversation-reply approval flow (same buttons, "cv*" prefix).
+  if (action === "cvapprove") return handleReplyApprove(chatId!, messageId, id);
+  if (action === "cvdecline") return handleReplyDecline(chatId!, messageId, id);
+  if (action === "cvcustom") return handleReplyCustom(chatId!, id);
 }
 
 async function loadQuote(quoteId: string): Promise<Quote | null> {
@@ -154,7 +174,7 @@ async function handleDecline(
 
   await supabase.from("quotes").update({ status: "declined" }).eq("id", quoteId);
   // Expect a follow-up decline reason from this chat next.
-  await upsertPendingEdit(chatId, quoteId, "decline_reason");
+  await upsertPendingEdit({ chatId, quoteId, kind: "decline_reason" });
   await clearButtons(chatId, messageId);
   await sendMessage({
     chatId,
@@ -168,10 +188,115 @@ async function handleCustom(chatId: number, quoteId: string) {
     await sendMessage({ chatId, text: "Tarjousta ei löytynyt." });
     return;
   }
-  await upsertPendingEdit(chatId, quoteId, "edit");
+  await upsertPendingEdit({ chatId, quoteId, kind: "edit" });
   await sendMessage({
     chatId,
     text: "✏️ Lähetä muutokset vapaalla kielellä, esim. \"muuta hinta 180 €:oon ja siirrä perjantaille klo 12\".",
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7 — conversation-reply button presses (Approve / Decline / Custom)
+// ---------------------------------------------------------------------------
+
+async function loadConversationRow(
+  id: string
+): Promise<EmailConversation | null> {
+  const { data } = await getSupabaseAdmin()
+    .from("email_conversations")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+  return (data as EmailConversation) ?? null;
+}
+
+async function handleReplyApprove(
+  chatId: number,
+  messageId: number,
+  convId: string
+) {
+  const row = await loadConversationRow(convId);
+  if (!row) {
+    await sendMessage({ chatId, text: "Vastausta ei löytynyt." });
+    return;
+  }
+  if (row.status !== "pending_review") {
+    await sendMessage({
+      chatId,
+      text: `Tämä vastaus on jo käsitelty (tila: ${row.status}).`,
+    });
+    return;
+  }
+  try {
+    const res = await approveConversationReply(convId);
+    await clearButtons(chatId, messageId);
+    const calNote =
+      res.calendarAction === "confirmed"
+        ? "\n📅 Varaus VAHVISTETTU kalenteriin."
+        : res.calendarAction === "rescheduled"
+          ? "\n📅 Alustava varaus siirretty uuteen aikaan."
+          : "";
+    await sendMessage({
+      chatId,
+      text: `✅ Hyväksytty ja lähetetty asiakkaalle.${calNote}`,
+    });
+  } catch (err) {
+    if (err instanceof SlotNoLongerFreeError) {
+      await sendMessage({
+        chatId,
+        text: "⚠️ Aika ei ole enää vapaa. Vastausta EI lähetetty. Muokkaa (✏️ Custom) tai käsittele manuaalisesti.",
+      });
+      return;
+    }
+    console.error("[telegram] reply approve failed:", err);
+    await sendMessage({ chatId, text: "Hyväksyntä epäonnistui. Tarkista lokit." });
+  }
+}
+
+async function handleReplyDecline(
+  chatId: number,
+  messageId: number,
+  convId: string
+) {
+  const row = await loadConversationRow(convId);
+  if (!row) {
+    await sendMessage({ chatId, text: "Vastausta ei löytynyt." });
+    return;
+  }
+  if (row.status !== "pending_review") {
+    await sendMessage({
+      chatId,
+      text: `Tämä vastaus on jo käsitelty (tila: ${row.status}).`,
+    });
+    return;
+  }
+  await declineConversationReply(convId);
+  await upsertPendingEdit({
+    chatId,
+    conversationId: convId,
+    kind: "reply_decline_reason",
+  });
+  await clearButtons(chatId, messageId);
+  await sendMessage({
+    chatId,
+    text: "❌ Hylätty — vastausta ei lähetetty. Syy (valinnainen)? Vastaa viestillä, tai jätä huomiotta.",
+  });
+}
+
+async function handleReplyCustom(chatId: number, convId: string) {
+  const row = await loadConversationRow(convId);
+  if (!row) {
+    await sendMessage({ chatId, text: "Vastausta ei löytynyt." });
+    return;
+  }
+  await upsertPendingEdit({
+    chatId,
+    conversationId: convId,
+    kind: "reply_edit",
+  });
+  await sendMessage({
+    chatId,
+    text: "✏️ Kuvaile muutokset vastausluonnokseen vapaalla kielellä.",
   });
 }
 
@@ -201,16 +326,112 @@ async function handleText(message: NonNullable<TgUpdate["message"]>) {
   await supabase.from("telegram_pending_edits").delete().eq("id", pending.id);
 
   if (pending.kind === "decline_reason") {
-    await supabase
-      .from("quotes")
-      .update({ decline_reason: text })
-      .eq("id", pending.quote_id);
+    if (pending.quote_id) {
+      await supabase
+        .from("quotes")
+        .update({ decline_reason: text })
+        .eq("id", pending.quote_id);
+    }
     await sendMessage({ chatId, text: "Kiitos, syy kirjattu." });
     return;
   }
 
+  if (pending.kind === "reply_decline_reason") {
+    if (pending.conversation_id) {
+      await declineConversationReply(pending.conversation_id, text);
+    }
+    await sendMessage({ chatId, text: "Kiitos, syy kirjattu." });
+    return;
+  }
+
+  if (pending.kind === "reply_edit") {
+    if (pending.conversation_id) {
+      await handleReplyEdit(chatId, pending.conversation_id, text);
+    }
+    return;
+  }
+
   // kind === 'edit'
-  await handleEdit(chatId, pending.quote_id, text);
+  if (pending.quote_id) {
+    await handleEdit(chatId, pending.quote_id, text);
+  }
+}
+
+async function handleReplyEdit(
+  chatId: number,
+  convId: string,
+  instruction: string
+) {
+  const supabase = getSupabaseAdmin();
+  const row = await loadConversationRow(convId);
+  if (!row) {
+    await sendMessage({ chatId, text: "Vastausta ei löytynyt." });
+    return;
+  }
+
+  let newText: string;
+  try {
+    newText = await reviseReplyDraft({
+      currentText: row.body_text ?? "",
+      instruction,
+    });
+  } catch (err) {
+    console.error("[telegram] reply revise failed:", err);
+    await sendMessage({
+      chatId,
+      text: "Muokkaus epäonnistui. Yritä uudelleen (✏️ Custom).",
+    });
+    return;
+  }
+  await supabase
+    .from("email_conversations")
+    .update({ body_text: newText })
+    .eq("id", convId);
+
+  // Rebuild the review card (inquiry via quote + the latest customer message).
+  const { data: quoteData } = await supabase
+    .from("quotes")
+    .select("inquiry_id")
+    .eq("id", row.quote_id)
+    .maybeSingle();
+  const inquiryId = (quoteData as { inquiry_id?: string } | null)?.inquiry_id;
+  const { data: inqData } = inquiryId
+    ? await supabase.from("inquiries").select("*").eq("id", inquiryId).maybeSingle()
+    : { data: null };
+  const inquiry = (inqData as Inquiry) ?? null;
+  const { data: lastInbound } = await supabase
+    .from("email_conversations")
+    .select("body_text")
+    .eq("quote_id", row.quote_id)
+    .eq("direction", "inbound")
+    .order("created_at", { ascending: false })
+    .limit(1);
+  const customerReply = (lastInbound?.[0]?.body_text as string) ?? "";
+
+  await sendMessage({ chatId, text: "✏️ Luonnos päivitetty." });
+  if (!inquiry) return;
+
+  const newSlotText =
+    row.proposed_date && row.proposed_start_time && row.proposed_end_time
+      ? `${row.proposed_date} klo ${row.proposed_start_time.slice(0, 5)}–${row.proposed_end_time.slice(0, 5)}`
+      : null;
+  const cardText = buildReplyReviewText({
+    inquiry,
+    intent: (row.classified_intent as ReplyIntent) ?? "unclear",
+    reasoning: "(muokattu luonnos)",
+    customerReply,
+    draftedResponse: newText,
+    newSlotText,
+  });
+  try {
+    const newMessageId = await sendReplyReviewNotification(convId, cardText);
+    await supabase
+      .from("email_conversations")
+      .update({ telegram_message_id: newMessageId })
+      .eq("id", convId);
+  } catch (err) {
+    console.error("[telegram] reply resend after edit failed:", err);
+  }
 }
 
 async function handleEdit(chatId: number, quoteId: string, instruction: string) {
@@ -316,17 +537,33 @@ async function handleEdit(chatId: number, quoteId: string, instruction: string) 
 // Helpers
 // ---------------------------------------------------------------------------
 
-// One pending row per quote (unique index). A new press replaces the prior one.
-async function upsertPendingEdit(
-  chatId: number,
-  quoteId: string,
-  kind: "edit" | "decline_reason"
-) {
+// One pending row per quote OR per conversation. A new press replaces the prior
+// one for that key (delete-then-insert).
+async function upsertPendingEdit(params: {
+  chatId: number;
+  quoteId?: string;
+  conversationId?: string;
+  kind: TelegramPendingEdit["kind"];
+}) {
   const supabase = getSupabaseAdmin();
-  await supabase.from("telegram_pending_edits").delete().eq("quote_id", quoteId);
-  await supabase
-    .from("telegram_pending_edits")
-    .insert({ chat_id: chatId, quote_id: quoteId, kind });
+  if (params.quoteId) {
+    await supabase
+      .from("telegram_pending_edits")
+      .delete()
+      .eq("quote_id", params.quoteId);
+  }
+  if (params.conversationId) {
+    await supabase
+      .from("telegram_pending_edits")
+      .delete()
+      .eq("conversation_id", params.conversationId);
+  }
+  await supabase.from("telegram_pending_edits").insert({
+    chat_id: params.chatId,
+    quote_id: params.quoteId ?? null,
+    conversation_id: params.conversationId ?? null,
+    kind: params.kind,
+  });
 }
 
 // Duration to reserve when re-checking availability after a schedule edit.

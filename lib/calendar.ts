@@ -164,3 +164,48 @@ export async function createTaggedEvent(
   if (!id) throw new Error("Calendar event creation returned no id.");
   return id;
 }
+
+/** Fetch a single event by id, or null if it no longer exists / was cancelled. */
+export async function getEventById(
+  eventId: string
+): Promise<{ id: string; status: string | null } | null> {
+  const calendar = getCalendar();
+  try {
+    const res = await calendar.events.get({
+      calendarId: getCalendarId(),
+      eventId,
+    });
+    if (!res.data.id || res.data.status === "cancelled") return null;
+    return { id: res.data.id, status: res.data.status ?? null };
+  } catch (err: unknown) {
+    // A 404/410 means the event is gone — treat as not found rather than throw.
+    const code = (err as { code?: number })?.code;
+    if (code === 404 || code === 410) return null;
+    throw err;
+  }
+}
+
+/** Overwrite an event's title/description (used to confirm a tentative hold). */
+export async function updateEvent(
+  eventId: string,
+  patch: { summary?: string; description?: string }
+): Promise<void> {
+  const calendar = getCalendar();
+  await calendar.events.patch({
+    calendarId: getCalendarId(),
+    eventId,
+    requestBody: patch,
+  });
+}
+
+/** Delete an event (used to release a superseded tentative hold on reschedule). */
+export async function deleteEvent(eventId: string): Promise<void> {
+  const calendar = getCalendar();
+  try {
+    await calendar.events.delete({ calendarId: getCalendarId(), eventId });
+  } catch (err: unknown) {
+    const code = (err as { code?: number })?.code;
+    if (code === 404 || code === 410) return; // already gone
+    throw err;
+  }
+}
