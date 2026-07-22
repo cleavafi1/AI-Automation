@@ -88,11 +88,13 @@ Ohjeet kenttiin:
 - notes_flag_reason: lyhyt suomenkielinen perustelu jos notes_flagged on true, muuten null.
 - drafted_text: kohtelias suomenkielinen tarjousluonnos asiakkaalle. Puhuttele asiakasta nimellä.
   - Jos palvelulla on kiinteä tuntihinta: mainitse tuntihinta ja että lopullinen hinta riippuu työhön kuluvasta ajasta. Mainitse ${MIN_HOURS} tunnin vähimmäistilaus jos se koskee palvelua.
-  - Jos alla on laskettu AIKA-ARVIO (tuntiarvio ja/tai arviohinta): voit mainita sen suuntaa-antavana arviona. Käytä VAIN annettuja lukuja — älä keksi omia tunteja tai euroja.
+  - Jos alla on laskettu AIKA-ARVIO (kokonaistyöaika ja/tai arviohinta): mainitse se suuntaa-antavana arviona. Käytä VAIN annettuja lukuja — älä keksi omia tunteja tai euroja. Selitä, että hinta perustuu kokonaistyötunteihin.
+  - Jos AIKA-ARVIOSSA kerrotaan siivoojien määrä ja valmistumisaika (esim. "Lähetämme 2 siivoojaa..."): kerro asiakkaalle montako siivoojaa lähetämme ja arvioitu paikan päällä kuluva aika, ja että hinta pysyy samana koska se perustuu kokonaistyötunteihin. Jos siivoojien määrää ei mainita (pieni kohde, yksi siivooja), älä mainitse siivoojien määrää.
+  - Jos AIKA-ARVIOSSA on nettohinta kotitalousvähennyksen jälkeen: mainitse sekä arviohinta että hinta kotitalousvähennyksen jälkeen (35 %, enintään 1 600 € / vuosi / henkilö) käyttäen annettuja lukuja.
+  - Jos alla on LISÄAIKAHUOMAUTUS: kerro asiakkaalle kohteliaasti, että arvio voi vaatia 1–2 lisätuntia, jos kohde on tavallista likaisempi (esim. paljon tavaraa, pitkä aika edellisestä siivouksesta, likainen keittiö/kylpyhuone). Korosta REHELLISESTI, että ilmoitamme aina ETUKÄTEEN — sähköpostitse tai ennen työn aloitusta paikan päällä — ennen lisäajan käyttöä, emmekä laskuta yllättäen. Ei piilokuluja.
   - Jos palvelu on tarjouspohjainen (ei kiinteää tuntihintaa) tai aika-arviota ei voitu laskea: kerro että laadimme kohteesta erillisen, räätälöidyn tarjouksen, äläkä keksi hintaa.
   - Jos pyynnöstä puuttuu olennaisia tietoja (merkitty HUOM-rivillä): pyydä kohteliaasti asiakasta täydentämään puuttuvat tiedot (esim. kohteen koko, palvelu tai sijainti), äläkä esitä hinta-arviota epävarmoista tiedoista.
   - Jos alla on EHDOTETTU AIKA: esitä se selkeästi EHDOTUKSENA, joka vaatii asiakkaan vahvistuksen. Käytä ilmaisua "ehdotettu aika" tai "alustava ehdotus". ÄLÄ KOSKAAN kirjoita että aika on "varattu", "vahvistettu" tai "sovittu". Pyydä asiakasta vahvistamaan tai ehdottamaan toista aikaa. Käytä VAIN annettua aikaa — älä keksi omaa. Jos ehdotettua aikaa ei ole, älä mainitse mitään tarkkaa aikaa.
-  - Mainitse kotitalousvähennys (35 %, enintään 1 600 € / vuosi / henkilö) VAIN jos alla kerrotaan että se koskee tätä palvelua.
   - Kerro että otamme yhteyttä 24 tunnin sisällä.
   - Älä keksi euromääräistä loppuhintaa tekstiin — käytä vain annettuja lukuja.
   - Allekirjoita "Ystävällisin terveisin, Cleava-tiimi".`;
@@ -118,6 +120,17 @@ function buildUserContent(
       ? `${inquiry.property_size_m2} m²`
       : sizeLabel(inquiry.property_size);
 
+  // Extra-hours transparency caveat: only for jobs over 30 m² (client rule).
+  // Under 30 m² we don't mention it. The base estimate is unchanged — this is a
+  // proactive "might need +1–2h, we'll always tell you first" note.
+  const m2 = inquiry.property_size_m2;
+  const extraHoursNote =
+    m2 != null && m2 > 30
+      ? `- LISÄAIKAHUOMAUTUS: kohde on ${m2} m² (yli 30 m²) — mainitse mahdollisuus 1–2 lisätuntiin${
+          m2 > 40 ? " (suuremmissa/likaisemmissa kohteissa jopa 2 tuntia)" : ""
+        } ja ETUKÄTEEN ilmoittamisen periaate (ei piilokuluja).`
+      : "";
+
   return [
     "SIIVOUSPYYNTÖ (asiakkaan omin sanoin):",
     inquiry.raw_request ? inquiry.raw_request : "(ei vapaatekstiä)",
@@ -139,6 +152,7 @@ function buildUserContent(
     `- Kotitalousvähennys koskee tätä palvelua: ${
       homeService ? "KYLLÄ" : "EI / ei tiedossa"
     }`,
+    homeService ? extraHoursNote : "",
     pricing.noRateReason ? `- Huom: ${pricing.noRateReason}` : "",
     "",
     "EHDOTETTU AIKA (laskettu kalenterin saatavuudesta — EI vahvistettu varaus):",
@@ -265,13 +279,14 @@ export async function generateQuoteForInquiry(inquiryId: string): Promise<Quote>
   );
 
   // 2c. Propose an appointment slot from live calendar availability + booking
-  // rules (Phase 5). Only when we know a duration to schedule (estimate has an
-  // upper-bound hour figure). The full estimated duration must fit the working
-  // window, so we schedule against the MAX hours. Calendar failures (e.g. no
-  // credentials in local dev) must NOT break quote generation — we log and
-  // leave the proposed slot null.
+  // rules (Phase 5). We reserve the WALL-CLOCK on-site duration — total
+  // work-hours ÷ cleaners (upper bound) — not the full 1-cleaner work-hours, so
+  // multi-cleaner jobs (e.g. 100–150 m² = 13–16h for one cleaner) actually fit
+  // the 08:00–18:00 window. Falls back to hoursMax when no cleaner split
+  // applies. Calendar failures must NOT break quote generation.
   let proposedSlot: Slot | null = null;
-  if (estimate.hoursMax != null) {
+  const reserveHours = estimate.finishHoursMax ?? estimate.hoursMax;
+  if (reserveHours != null) {
     const { isUusimaa } = resolveUusimaa(
       typedInquiry.city,
       typedInquiry.postal_code
@@ -282,7 +297,7 @@ export async function generateQuoteForInquiry(inquiryId: string): Promise<Quote>
         : null;
     try {
       proposedSlot = await findNearestAvailableSlot({
-        durationHours: estimate.hoursMax,
+        durationHours: reserveHours,
         isUusimaa,
         requested,
       });

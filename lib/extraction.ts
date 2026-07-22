@@ -221,11 +221,46 @@ export function normalizeExtraction(raw: RawExtraction): Extraction {
 //    a price range. All arithmetic in code; the model never touches it.
 // ---------------------------------------------------------------------------
 
+// Kotitalousvähennys: 35 % of the labour cost, capped at €1,600 / year / person.
+export const KOTITALOUSVAHENNYS_RATE = 0.35;
+const KOTITALOUSVAHENNYS_MAX = 1600;
+
+/**
+ * Number of cleaners we send, by size — the client's fixed business rule
+ * (matches the estimation guide's column structure):
+ *   < 30 m²        → 1 cleaner  (not mentioned to the customer)
+ *   30–under 100   → 2 cleaners (mentioned)
+ *   100 m² and up  → 3 cleaners (mentioned)
+ * Price is unaffected (total work-hours × rate); more cleaners just finish the
+ * same total work faster (wall-clock = total ÷ cleaners).
+ */
+export function cleanerCountForM2(m2: number | null): number {
+  if (m2 == null) return 1;
+  if (m2 < 30) return 1;
+  if (m2 < 100) return 2;
+  return 3;
+}
+
+/** Net price after kotitalousvähennys (35 %, capped), rounded. */
+export function netAfterDeduction(price: number): number {
+  const deduction = Math.min(price * KOTITALOUSVAHENNYS_RATE, KOTITALOUSVAHENNYS_MAX);
+  return Math.round(price - deduction);
+}
+
 export type Estimate = {
+  // Total work-hours (single cleaner) — the price basis.
   hoursMin: number | null;
   hoursMax: number | null;
+  // Price = total work-hours × rate (unchanged by cleaner count).
   priceMin: number | null;
   priceMax: number | null;
+  // Net price to the customer after kotitalousvähennys (home services).
+  netPriceMin: number | null;
+  netPriceMax: number | null;
+  // Cleaners sent, and the resulting on-site wall-clock time (total ÷ cleaners).
+  cleaners: number;
+  finishHoursMin: number | null;
+  finishHoursMax: number | null;
   // The matched estimation-guide bracket, if any.
   matchedBracket: TimeEstimate | null;
 };
@@ -272,12 +307,18 @@ export function computeEstimate(
   minHours: number
 ): Estimate {
   const bracket = lookupTimeEstimate(serviceType, m2, estimates);
+  const cleaners = cleanerCountForM2(m2);
 
   const empty: Estimate = {
     hoursMin: null,
     hoursMax: null,
     priceMin: null,
     priceMax: null,
+    netPriceMin: null,
+    netPriceMax: null,
+    cleaners,
+    finishHoursMin: null,
+    finishHoursMax: null,
     matchedBracket: bracket,
   };
 
@@ -286,18 +327,42 @@ export function computeEstimate(
   const hoursMin = Math.max(Number(bracket.hours_min_1c), minHours);
   const hoursMax = Math.max(Number(bracket.hours_max_1c), minHours);
 
+  // On-site wall-clock time = total work-hours ÷ cleaners (rounded to 0.5h),
+  // still respecting the minimum-order floor.
+  const roundHalf = (h: number) => Math.max(Math.round(h * 2) / 2, minHours);
+  const finishHoursMin = roundHalf(hoursMin / cleaners);
+  const finishHoursMax = roundHalf(hoursMax / cleaners);
+
   if (!pricing.hasStandardRate || pricing.baseRate == null) {
     // We have an hour range but no fixed rate to price it against.
-    return { hoursMin, hoursMax, priceMin: null, priceMax: null, matchedBracket: bracket };
+    return {
+      ...empty,
+      hoursMin,
+      hoursMax,
+      finishHoursMin,
+      finishHoursMax,
+    };
   }
+
+  const priceMin = Math.round(pricing.baseRate * hoursMin);
+  const priceMax = Math.round(pricing.baseRate * hoursMax);
 
   return {
     hoursMin,
     hoursMax,
-    priceMin: Math.round(pricing.baseRate * hoursMin),
-    priceMax: Math.round(pricing.baseRate * hoursMax),
+    priceMin,
+    priceMax,
+    netPriceMin: netAfterDeduction(priceMin),
+    netPriceMax: netAfterDeduction(priceMax),
+    cleaners,
+    finishHoursMin,
+    finishHoursMax,
     matchedBracket: bracket,
   };
+}
+
+function fmtRange(min: number, max: number, unit: string): string {
+  return min === max ? `${min} ${unit}` : `${min}–${max} ${unit}`;
 }
 
 /** Human-readable Finnish summary of an estimate, for the drafting prompt. */
@@ -308,15 +373,38 @@ export function describeEstimate(
   if (estimate.hoursMin == null || estimate.hoursMax == null) {
     return "Tuntiarviota ei voitu laskea (koko tai palvelu puuttuu, tai palvelulle ei ole arviotaulukkoa).";
   }
-  const hours =
-    estimate.hoursMin === estimate.hoursMax
-      ? `${estimate.hoursMin} h`
-      : `${estimate.hoursMin}–${estimate.hoursMax} h`;
-  const price =
-    estimate.priceMin != null && estimate.priceMax != null
-      ? estimate.priceMin === estimate.priceMax
-        ? `, arviohinta noin ${estimate.priceMin} €`
-        : `, arviohinta noin ${estimate.priceMin}–${estimate.priceMax} €`
-      : "";
-  return `${serviceLabel(serviceType)}: arvioitu työaika ${hours}${price} (yksi siivooja).`;
+  const lines: string[] = [];
+  lines.push(
+    `${serviceLabel(serviceType)}: kokonaistyöaika ${fmtRange(
+      estimate.hoursMin,
+      estimate.hoursMax,
+      "h"
+    )} (hinnan peruste; yhden siivoojan työtunnit yhteensä).`
+  );
+  if (estimate.priceMin != null && estimate.priceMax != null) {
+    lines.push(`Arviohinta: noin ${fmtRange(estimate.priceMin, estimate.priceMax, "€")}.`);
+  }
+  if (estimate.netPriceMin != null && estimate.netPriceMax != null) {
+    lines.push(
+      `Kotitalousvähennyksen jälkeen (35 %): noin ${fmtRange(
+        estimate.netPriceMin,
+        estimate.netPriceMax,
+        "€"
+      )}.`
+    );
+  }
+  if (
+    estimate.cleaners >= 2 &&
+    estimate.finishHoursMin != null &&
+    estimate.finishHoursMax != null
+  ) {
+    lines.push(
+      `Lähetämme ${estimate.cleaners} siivoojaa, jolloin työ valmistuu paikan päällä noin ${fmtRange(
+        estimate.finishHoursMin,
+        estimate.finishHoursMax,
+        "tunnissa"
+      )} (hinta pysyy samana, koska se perustuu kokonaistyötunteihin).`
+    );
+  }
+  return lines.join(" ");
 }

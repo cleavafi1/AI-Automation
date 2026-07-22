@@ -357,5 +357,6 @@ async function quoteDurationHours(
     (estRows ?? []) as TimeEstimate[],
     2
   );
-  return estimate.hoursMax ?? 2;
+  // Reserve the wall-clock finish time (total ÷ cleaners), matching generation.
+  return estimate.finishHoursMax ?? estimate.hoursMax ?? 2;
 }
