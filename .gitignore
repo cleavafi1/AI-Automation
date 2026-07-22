@@ -32,3 +32,6 @@ next-env.d.ts
 
 # Local secret artifacts — never commit
 base64_output.txt
+
+# Internal reference docs — not for the public repo
+*.pdf

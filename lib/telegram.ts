@@ -73,6 +73,21 @@ export async function sendMessage(params: {
   return msg.message_id;
 }
 
+/** Register the webhook URL with Telegram (called server-side from Netlify). */
+export async function setWebhook(url: string): Promise<unknown> {
+  const payload: Record<string, unknown> = {
+    url,
+    allowed_updates: ["message", "callback_query"],
+  };
+  const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
+  if (secret) payload.secret_token = secret;
+  return tgCall("setWebhook", payload);
+}
+
+export async function getWebhookInfo(): Promise<unknown> {
+  return tgCall("getWebhookInfo", {});
+}
+
 export async function answerCallbackQuery(
   callbackQueryId: string,
   text?: string
