@@ -37,9 +37,10 @@ optional `TELEGRAM_WEBHOOK_SECRET`. Same vars must be set in Netlify env.
 stage explicit files).
 
 ## Database
-Supabase Postgres. Apply migrations `supabase/migrations/0001` … `0011` **in
-order** in the SQL editor. `0011` (Telegram) is the newest. If quote generation
-500s with "column not found", a migration hasn't been applied.
+Supabase Postgres. Apply migrations `supabase/migrations/0001` … `0012` **in
+order** in the SQL editor. `0011` (Telegram) and `0012` (billing address) are the
+newest. If quote generation 500s with "column not found", a migration hasn't been
+applied.
 
 ## Architecture / data flow
 1. Public form (`components/InquiryForm.tsx`) collects name/email/phone + one
@@ -54,10 +55,13 @@ order** in the SQL editor. `0011` (Telegram) is the newest. If quote generation
      **cleaner count** by size (<30 m²=1, 30–<100=2, 100+=3), **finish time** =
      total ÷ cleaners, **net price** after kotitalousvähennys (35%).
    - Calendar (`lib/booking.ts` + `lib/calendar.ts`): proposes the nearest slot
-     satisfying deterministic rules (08:00–18:00 Europe/Helsinki, no overlap, 1h
-     Uusimaa travel gap, max 5 cleaning/day). **Forward-only** from the requested
-     day. Reserves the **finish time** (total ÷ cleaners). Timezone math in
-     `lib/timezone.ts`.
+     satisfying deterministic rules (08:00–18:00 Europe/Helsinki, no overlap, a
+     **1h gap before/after every appointment for all locations**, max 5
+     cleaning/day). **Forward-only** from the requested day. Reserves the
+     **finish time** (total ÷ cleaners). Timezone math in `lib/timezone.ts`.
+   - Billing address: extraction pulls street/building/apartment; if incomplete
+     (`needs_billing_address`) the draft asks the customer for the full billing
+     address for invoicing. Shown in Telegram + `/admin`.
    - Claude drafts the customer-facing Finnish text (proposal wording only —
      "ehdotettu aika", never "varattu"), includes cleaner count, finish time,
      gross+net price, and a ">30 m² may need +1–2h, always announced beforehand,
