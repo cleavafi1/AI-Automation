@@ -30,6 +30,10 @@ const RawExtractionSchema = z.object({
   requested_time: z.string().nullable(),
   frequency: z.string().nullable(),
   condition_notes: z.string().nullable(),
+  // Billing address components (for invoicing).
+  billing_street: z.string().nullable(),
+  billing_building_number: z.string().nullable(),
+  billing_apartment: z.string().nullable(),
 });
 
 type RawExtraction = z.infer<typeof RawExtractionSchema>;
@@ -47,6 +51,9 @@ const RAW_EXTRACTION_JSON_SCHEMA = {
     requested_time: { type: ["string", "null"] },
     frequency: { type: ["string", "null"] },
     condition_notes: { type: ["string", "null"] },
+    billing_street: { type: ["string", "null"] },
+    billing_building_number: { type: ["string", "null"] },
+    billing_apartment: { type: ["string", "null"] },
   },
   required: [
     "service_type",
@@ -58,6 +65,9 @@ const RAW_EXTRACTION_JSON_SCHEMA = {
     "requested_time",
     "frequency",
     "condition_notes",
+    "billing_street",
+    "billing_building_number",
+    "billing_apartment",
   ],
 } as const;
 
@@ -75,6 +85,12 @@ export type Extraction = {
   condition_notes: string | null;
   needs_clarification: boolean;
   clarification_reason: string | null;
+  // Billing address (for invoicing).
+  billing_street: string | null;
+  billing_building_number: string | null;
+  billing_apartment: string | null;
+  // True when the billing address is incomplete (street + building + postal).
+  needs_billing_address: boolean;
 };
 
 const EXTRACTION_SYSTEM_PROMPT = `Olet Cleavan (siivouspalvelu) tiedon poimija. Saat asiakkaan vapaamuotoisen siivouspyynnön suomeksi. Tehtäväsi on poimia siitä jäsennellyt kentät.
@@ -91,6 +107,9 @@ Kentät:
 - requested_time: TÄSMÄLLINEN kellonaika muodossa HH:MM (24h), VAIN jos asiakas antaa selkeän ajan (esim. "klo 10", "aamupäivällä" → älä arvaa; vain jos tarkka). Muuten null.
 - frequency: siivousväli. Palauta täsmälleen yksi näistä koodeista tai null: ${FREQUENCY_VALUES.join(", ")}. (kertaluontoinen = kertaluontoinen, viikoittain = viikoittain, joka_toinen_viikko = joka toinen viikko, kuukausittain = kuukausittain.)
 - condition_notes: maininnat kunnosta, lemmikeistä, kulusta/avaimista, erikoistoiveista tai lisätöistä (esim. "kaksi kissaa", "uuni pestävä", "avain saatavilla ovimatolta"). Muuten null.
+- billing_street: laskutusosoitteen kadunnimi jos mainittu (esim. "Mannerheimintie"), muuten null.
+- billing_building_number: rakennuksen numero jos mainittu (esim. "5" tai "12 B"), muuten null.
+- billing_apartment: asunnon/oven numero jos mainittu (esim. "A 12", "as. 7", "C 34"), muuten null.
 
 Palauta pelkkä JSON annetun skeeman mukaisesti.`;
 
@@ -187,6 +206,11 @@ export function normalizeExtraction(raw: RawExtraction): Extraction {
       ? raw.requested_time.trim().padStart(5, "0")
       : null;
 
+  const clean = (v: string | null) => (v && v.trim() ? v.trim() : null);
+  const billing_street = clean(raw.billing_street);
+  const billing_building_number = clean(raw.billing_building_number);
+  const billing_apartment = clean(raw.billing_apartment);
+
   // needs_clarification: true when service type, size, OR location can't be
   // determined (location = postal code or city). Reason is code-built.
   const missing: string[] = [];
@@ -198,6 +222,14 @@ export function normalizeExtraction(raw: RawExtraction): Extraction {
   const clarification_reason = needs_clarification
     ? `Pyynnöstä ei voitu päätellä: ${missing.join(", ")}.`
     : null;
+
+  // A billing address is complete enough to invoice when we have the street,
+  // the building number and a postal code (apartment is optional for houses).
+  const needs_billing_address = !(
+    billing_street &&
+    billing_building_number &&
+    postal_code
+  );
 
   return {
     service_type,
@@ -211,6 +243,10 @@ export function normalizeExtraction(raw: RawExtraction): Extraction {
     condition_notes,
     needs_clarification,
     clarification_reason,
+    billing_street,
+    billing_building_number,
+    billing_apartment,
+    needs_billing_address,
   };
 }
 

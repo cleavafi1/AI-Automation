@@ -10,7 +10,6 @@ import { approveAndSend } from "./approve-send";
 import { SlotNoLongerFreeError } from "./tentative-hold";
 import { reviseQuoteDraft } from "./telegram-edit";
 import { findNearestAvailableSlot } from "./booking";
-import { resolveUusimaa } from "./locations";
 import { resolvePricing } from "./pricing";
 import { computeEstimate } from "./extraction";
 import { parseHelsinkiDateTime, normalizeHHMM } from "./timezone";
@@ -250,7 +249,6 @@ async function handleEdit(chatId: number, quoteId: string, instruction: string) 
   // If the schedule changed, re-run availability for the new requested slot.
   if (revision.schedule_changed && revision.new_date) {
     const durationHours = await quoteDurationHours(quote, inquiry, supabase);
-    const { isUusimaa } = resolveUusimaa(inquiry.city, inquiry.postal_code);
     const startForRequest =
       revision.new_time ??
       normalizeHHMM(quote.proposed_start_time ?? "08:00") ??
@@ -259,7 +257,6 @@ async function handleEdit(chatId: number, quoteId: string, instruction: string) 
     try {
       const slot = await findNearestAvailableSlot({
         durationHours,
-        isUusimaa,
         requested,
       });
       if (slot) {

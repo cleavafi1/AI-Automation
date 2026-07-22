@@ -120,6 +120,18 @@ function locationText(inq: Inquiry): string {
   return parts.length ? parts.join(" ") : "—";
 }
 
+function billingText(inq: Inquiry): string {
+  const parts = [
+    inq.billing_street,
+    inq.billing_building_number,
+    inq.billing_apartment,
+    inq.postal_code,
+    inq.city,
+  ].filter(Boolean);
+  const known = parts.length ? parts.join(" ") : "—";
+  return inq.needs_billing_address ? `${known} ⚠️ (puuttuu/vajaa)` : known;
+}
+
 function sizeText(inq: Inquiry): string {
   return inq.property_size_m2 != null ? `${inq.property_size_m2} m²` : "—";
 }
@@ -148,6 +160,7 @@ export function buildQuoteNotificationText(quote: Quote, inq: Inquiry): string {
     `Palvelu: ${serviceLabel(inq.service_type)}`,
     `Koko: ${sizeText(inq)}`,
     `Sijainti: ${locationText(inq)}`,
+    `Laskutusosoite: ${billingText(inq)}`,
     `Hinta: ${priceText(quote)}`,
     `Ehdotettu aika: ${proposedText(quote)}`,
     quote.is_flagged

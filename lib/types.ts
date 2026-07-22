@@ -16,6 +16,12 @@ export type Inquiry = {
   // Set when service/size/location couldn't be determined from raw_request.
   needs_clarification: boolean;
   clarification_reason: string | null;
+  // Billing address (for invoicing) — street-level components; postal_code/city
+  // above complete it. needs_billing_address is true when it's incomplete.
+  billing_street: string | null;
+  billing_building_number: string | null;
+  billing_apartment: string | null;
+  needs_billing_address: boolean;
   name: string;
   email: string;
   phone: string;

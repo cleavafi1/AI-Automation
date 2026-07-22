@@ -361,6 +361,21 @@ export default async function AdminQuotesPage({
                               .join(" · ") || "—"
                           }
                         />
+                        <Row
+                          label="Billing"
+                          value={
+                            ([
+                              inq.billing_street,
+                              inq.billing_building_number,
+                              inq.billing_apartment,
+                              inq.postal_code,
+                              inq.city,
+                            ]
+                              .filter(Boolean)
+                              .join(" ") || "—") +
+                            (inq.needs_billing_address ? "  ⚠ incomplete" : "")
+                          }
+                        />
                         <Row label="Notes" value={inq.notes ?? "—"} />
                         {inq.needs_clarification && (
                           <Row

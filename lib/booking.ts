@@ -15,13 +15,16 @@ import {
 // Rules (all in Europe/Helsinki wall time):
 //   • Working window 08:00–18:00; the FULL estimated duration must fit before 18:00.
 //   • No overlap with any existing timed event.
-//   • Uusimaa: a 1-hour travel gap before/after neighbouring events.
+//   • A 1-hour gap before/after every neighbouring appointment (travel/buffer),
+//     applied to ALL bookings regardless of location. So an appointment ending
+//     at 12:00 makes the next bookable start 13:00.
 //   • Max 5 cleaning appointments per day.
 
 export const WORK_START_MIN = 8 * 60; // 08:00
 export const WORK_END_MIN = 18 * 60; // 18:00
 export const MAX_CLEANING_PER_DAY = 5;
-export const UUSIMAA_GAP_MIN = 60;
+// 1-hour buffer before/after every neighbouring appointment (all locations).
+export const APPOINTMENT_GAP_MIN = 60;
 const SLOT_INCREMENT_MIN = 30;
 const SEARCH_SPAN_DAYS = 21; // how far forward to look for a slot
 
@@ -87,18 +90,17 @@ export function countCleaningOnDay(dateStr: string, events: CalEvent[]): number 
 }
 
 /**
- * Is the exact [start, end] interval free under overlap + Uusimaa-gap rules,
- * given the existing events? The gap is applied symmetrically around our slot
- * against ALL events (conservative: a neighbouring commitment of any kind needs
- * travel spacing in Uusimaa).
+ * Is the exact [start, end] interval free under overlap + gap rules, given the
+ * existing events? A 1-hour gap is applied symmetrically around our slot against
+ * ALL events (every neighbouring commitment needs buffer/travel spacing), so a
+ * job right after an event ending at 12:00 can only start at 13:00.
  */
 export function isIntervalFree(
   startInstant: Date,
   endInstant: Date,
-  isUusimaa: boolean,
   events: CalEvent[]
 ): boolean {
-  const gapMs = (isUusimaa ? UUSIMAA_GAP_MIN : 0) * 60_000;
+  const gapMs = APPOINTMENT_GAP_MIN * 60_000;
   const reqStart = startInstant.getTime() - gapMs;
   const reqEnd = endInstant.getTime() + gapMs;
   for (const ev of events) {
@@ -146,12 +148,11 @@ function buildSlot(
  */
 export function findNearestSlotPure(params: {
   durationHours: number;
-  isUusimaa: boolean;
   requested: Date | null;
   now: Date;
   events: CalEvent[];
 }): Slot | null {
-  const { durationHours, isUusimaa, requested, now, events } = params;
+  const { durationHours, requested, now, events } = params;
   const durationMin = Math.ceil(durationHours * 60);
   if (durationMin <= 0 || durationMin > WORK_END_MIN - WORK_START_MIN) {
     return null; // can't fit in a single working day
@@ -186,7 +187,7 @@ export function findNearestSlotPure(params: {
       if (!slot) continue;
       // Never in the past.
       if (slot.startInstant.getTime() <= now.getTime()) continue;
-      if (!isIntervalFree(slot.startInstant, slot.endInstant, isUusimaa, events)) {
+      if (!isIntervalFree(slot.startInstant, slot.endInstant, events)) {
         continue;
       }
       const distance = Math.abs(slot.startInstant.getTime() - target.getTime());
@@ -207,7 +208,6 @@ export function findNearestSlotPure(params: {
  */
 export async function findNearestAvailableSlot(params: {
   durationHours: number;
-  isUusimaa: boolean;
   requested: Date | null;
   now?: Date;
 }): Promise<Slot | null> {
@@ -218,7 +218,6 @@ export async function findNearestAvailableSlot(params: {
   const events = await listEvents(windowStart, windowEnd);
   return findNearestSlotPure({
     durationHours: params.durationHours,
-    isUusimaa: params.isUusimaa,
     requested: params.requested,
     now,
     events,
@@ -234,7 +233,6 @@ export async function isSlotStillFree(params: {
   date: string;
   startTime: string;
   endTime: string;
-  isUusimaa: boolean;
   now?: Date;
 }): Promise<boolean> {
   const now = params.now ?? new Date();
@@ -256,5 +254,5 @@ export async function isSlotStillFree(params: {
   if (countCleaningOnDay(params.date, events) >= MAX_CLEANING_PER_DAY) {
     return false;
   }
-  return isIntervalFree(startInstant, endInstant, params.isUusimaa, events);
+  return isIntervalFree(startInstant, endInstant, events);
 }

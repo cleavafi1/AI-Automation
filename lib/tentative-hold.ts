@@ -1,7 +1,6 @@
 import { getSupabaseAdmin } from "./supabase";
 import { isSlotStillFree } from "./booking";
 import { createTaggedEvent } from "./calendar";
-import { resolveUusimaa } from "./locations";
 import { normalizeHHMM } from "./timezone";
 import { serviceLabel } from "./constants";
 import type { Inquiry, Quote } from "./types";
@@ -83,13 +82,8 @@ export async function placeTentativeHold(quoteId: string): Promise<HoldResult> {
   }
   const typedInquiry = (inquiry ?? null) as Inquiry | null;
 
-  const { isUusimaa } = resolveUusimaa(
-    typedInquiry?.city ?? null,
-    typedInquiry?.postal_code ?? null
-  );
-
   // Final re-check against the live calendar.
-  const free = await isSlotStillFree({ date, startTime, endTime, isUusimaa });
+  const free = await isSlotStillFree({ date, startTime, endTime });
   if (!free) {
     throw new SlotNoLongerFreeError();
   }

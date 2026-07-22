@@ -244,7 +244,9 @@ approval it re-checks and places a **tentative** hold. Nothing is auto-confirmed
   - Working window **08:00–18:00**; the full estimated duration (scheduled
     against the **max** hour estimate) must fit before 18:00.
   - No overlap with any existing timed event.
-  - **Uusimaa**: 1-hour travel gap before/after neighbouring events.
+  - **1-hour gap** before/after every neighbouring appointment — applied to
+    **all** bookings (updated from the earlier Uusimaa-only rule per client
+    feedback). So an appointment ending 12:00 makes the next start 13:00.
   - **Max 5 cleaning appointments/day**. Counting pre-existing entries is a
     **best-effort keyword heuristic** (siivous/kotisiivous/muuttosiivous/
     ikkunanpesu/tehopuhdistus/suursiivous) — a documented limitation on

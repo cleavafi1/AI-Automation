@@ -10,7 +10,6 @@ import {
   type Estimate,
 } from "./extraction";
 import { findNearestAvailableSlot, type Slot } from "./booking";
-import { resolveUusimaa } from "./locations";
 import { parseHelsinkiDateTime } from "./timezone";
 import { sendQuoteNotification, isTelegramConfigured } from "./telegram";
 import {
@@ -94,7 +93,9 @@ Ohjeet kenttiin:
   - Jos alla on LISÄAIKAHUOMAUTUS: kerro asiakkaalle kohteliaasti, että arvio voi vaatia 1–2 lisätuntia, jos kohde on tavallista likaisempi (esim. paljon tavaraa, pitkä aika edellisestä siivouksesta, likainen keittiö/kylpyhuone). Korosta REHELLISESTI, että ilmoitamme aina ETUKÄTEEN — sähköpostitse tai ennen työn aloitusta paikan päällä — ennen lisäajan käyttöä, emmekä laskuta yllättäen. Ei piilokuluja.
   - Jos palvelu on tarjouspohjainen (ei kiinteää tuntihintaa) tai aika-arviota ei voitu laskea: kerro että laadimme kohteesta erillisen, räätälöidyn tarjouksen, äläkä keksi hintaa.
   - Jos pyynnöstä puuttuu olennaisia tietoja (merkitty HUOM-rivillä): pyydä kohteliaasti asiakasta täydentämään puuttuvat tiedot (esim. kohteen koko, palvelu tai sijainti), äläkä esitä hinta-arviota epävarmoista tiedoista.
-  - Jos alla on EHDOTETTU AIKA: esitä se selkeästi EHDOTUKSENA, joka vaatii asiakkaan vahvistuksen. Käytä ilmaisua "ehdotettu aika" tai "alustava ehdotus". ÄLÄ KOSKAAN kirjoita että aika on "varattu", "vahvistettu" tai "sovittu". Pyydä asiakasta vahvistamaan tai ehdottamaan toista aikaa. Käytä VAIN annettua aikaa — älä keksi omaa. Jos ehdotettua aikaa ei ole, älä mainitse mitään tarkkaa aikaa.
+  - Jos alla on EHDOTETTU AIKA: esitä se selkeästi EHDOTUKSENA, joka vaatii asiakkaan vahvistuksen. Käytä ilmaisua "ehdotettu aika" tai "alustava ehdotus". ÄLÄ KOSKAAN kirjoita että aika on "varattu", "vahvistettu" tai "sovittu". Pyydä asiakasta vahvistamaan ehdotettu aika TAI kertomaan mikä päivä hänelle sopisi paremmin. Käytä VAIN annettua aikaa — älä keksi omaa.
+  - Jos ehdotettua aikaa EI ole (aikaa ei voitu laskea tai kalenterissa ei ollut vapaata): älä mainitse mitään tarkkaa aikaa, vaan pyydä asiakasta kertomaan mikä päivä hänelle sopisi, niin etsimme sopivan ajan.
+  - LASKUTUSOSOITE: jos alla lukee että laskutusosoite puuttuu tai on vajaa, pyydä asiakasta kohteliaasti toimittamaan täydellinen laskutusosoite laskutusta varten: katuosoite, rakennuksen numero, asunnon/oven numero ja postinumero. Jos laskutusosoite on jo täydellinen, voit vahvistaa sen lyhyesti, äläkä pyydä sitä uudelleen.
   - Kerro että otamme yhteyttä 24 tunnin sisällä.
   - Älä keksi euromääräistä loppuhintaa tekstiin — käytä vain annettuja lukuja.
   - Allekirjoita "Ystävällisin terveisin, Cleava-tiimi".`;
@@ -131,6 +132,20 @@ function buildUserContent(
         } ja ETUKÄTEEN ilmoittamisen periaate (ei piilokuluja).`
       : "";
 
+  // Billing address for invoicing. We show what we have; if incomplete, the
+  // draft must ask the customer to supply the missing parts.
+  const billingParts = [
+    inquiry.billing_street,
+    inquiry.billing_building_number,
+    inquiry.billing_apartment,
+    inquiry.postal_code,
+    inquiry.city,
+  ].filter(Boolean);
+  const billingKnown = billingParts.length ? billingParts.join(" ") : "(ei tiedossa)";
+  const billingLine = inquiry.needs_billing_address
+    ? `- LASKUTUSOSOITE PUUTTUU tai on vajaa (tiedossa: ${billingKnown}). Pyydä asiakkaalta täydellinen laskutusosoite: katuosoite, rakennuksen numero, asunnon/oven numero ja postinumero — tarvitsemme sen laskutusta varten.`
+    : `- Laskutusosoite: ${billingKnown} (täydellinen).`;
+
   return [
     "SIIVOUSPYYNTÖ (asiakkaan omin sanoin):",
     inquiry.raw_request ? inquiry.raw_request : "(ei vapaatekstiä)",
@@ -153,6 +168,7 @@ function buildUserContent(
       homeService ? "KYLLÄ" : "EI / ei tiedossa"
     }`,
     homeService ? extraHoursNote : "",
+    billingLine,
     pricing.noRateReason ? `- Huom: ${pricing.noRateReason}` : "",
     "",
     "EHDOTETTU AIKA (laskettu kalenterin saatavuudesta — EI vahvistettu varaus):",
@@ -234,6 +250,10 @@ export async function generateQuoteForInquiry(inquiryId: string): Promise<Quote>
       frequency: extraction.frequency,
       needs_clarification: extraction.needs_clarification,
       clarification_reason: extraction.clarification_reason,
+      billing_street: extraction.billing_street,
+      billing_building_number: extraction.billing_building_number,
+      billing_apartment: extraction.billing_apartment,
+      needs_billing_address: extraction.needs_billing_address,
       notes: mergedNotes,
     };
 
@@ -287,10 +307,6 @@ export async function generateQuoteForInquiry(inquiryId: string): Promise<Quote>
   let proposedSlot: Slot | null = null;
   const reserveHours = estimate.finishHoursMax ?? estimate.hoursMax;
   if (reserveHours != null) {
-    const { isUusimaa } = resolveUusimaa(
-      typedInquiry.city,
-      typedInquiry.postal_code
-    );
     const requested =
       requestedDate != null
         ? parseHelsinkiDateTime(requestedDate, requestedTime ?? "08:00")
@@ -298,7 +314,6 @@ export async function generateQuoteForInquiry(inquiryId: string): Promise<Quote>
     try {
       proposedSlot = await findNearestAvailableSlot({
         durationHours: reserveHours,
-        isUusimaa,
         requested,
       });
     } catch (err) {
