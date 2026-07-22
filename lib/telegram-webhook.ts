@@ -39,8 +39,8 @@ type TgUpdate = {
 
 function isStaffChat(chatId: number | undefined): boolean {
   if (chatId == null) return false;
-  const { staffChatId } = getTelegramConfig();
-  return String(chatId) === String(staffChatId);
+  const { staffChatIds } = getTelegramConfig();
+  return staffChatIds.includes(String(chatId));
 }
 
 export async function processTelegramUpdate(update: unknown): Promise<void> {

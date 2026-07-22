@@ -6,15 +6,39 @@ import type { Inquiry, Quote } from "./types";
 
 const API_BASE = "https://api.telegram.org";
 
-export type TelegramConfig = { token: string; staffChatId: string };
+export type TelegramConfig = {
+  token: string;
+  // All authorized staff chat ids. TELEGRAM_STAFF_CHAT_ID may hold one id or a
+  // comma-separated list (e.g. "7775766502,6190627659") — every id receives
+  // quote notifications and is allowed to approve/decline/edit.
+  staffChatIds: string[];
+  // The primary (first) id — used where a single target is needed and for the
+  // stored telegram_message_id.
+  staffChatId: string;
+};
+
+/** Parse TELEGRAM_STAFF_CHAT_ID into a de-duped list (comma/space separated). */
+function parseStaffChatIds(raw: string): string[] {
+  return Array.from(
+    new Set(
+      raw
+        .split(/[,\s]+/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+    )
+  );
+}
 
 export function getTelegramConfig(): TelegramConfig {
   const token = process.env.TELEGRAM_BOT_TOKEN;
-  const staffChatId = process.env.TELEGRAM_STAFF_CHAT_ID;
+  const staffRaw = process.env.TELEGRAM_STAFF_CHAT_ID;
   if (!token) throw new Error("Missing TELEGRAM_BOT_TOKEN environment variable.");
-  if (!staffChatId)
+  if (!staffRaw)
     throw new Error("Missing TELEGRAM_STAFF_CHAT_ID environment variable.");
-  return { token, staffChatId };
+  const staffChatIds = parseStaffChatIds(staffRaw);
+  if (staffChatIds.length === 0)
+    throw new Error("TELEGRAM_STAFF_CHAT_ID has no valid chat ids.");
+  return { token, staffChatIds, staffChatId: staffChatIds[0] };
 }
 
 /** True when Telegram is configured (so callers can no-op gracefully if not). */
@@ -181,10 +205,32 @@ export async function sendQuoteNotification(
   quote: Quote,
   inq: Inquiry
 ): Promise<number> {
-  const { staffChatId } = getTelegramConfig();
-  return sendMessage({
-    chatId: staffChatId,
-    text: buildQuoteNotificationText(quote, inq),
-    replyMarkup: quoteActionKeyboard(quote.id),
+  const { staffChatIds } = getTelegramConfig();
+  const text = buildQuoteNotificationText(quote, inq);
+  const replyMarkup = quoteActionKeyboard(quote.id);
+
+  // Send to the primary recipient first — a failure here throws (callers wrap
+  // it, so a Telegram outage can't break quote generation). Its message_id is
+  // the one stored on the quote.
+  const [primaryId, ...others] = staffChatIds;
+  const primaryMessageId = await sendMessage({
+    chatId: primaryId,
+    text,
+    replyMarkup,
   });
+
+  // Additional recipients are best-effort: one bad/blocked id must not stop the
+  // others or fail the whole notification.
+  for (const chatId of others) {
+    try {
+      await sendMessage({ chatId, text, replyMarkup });
+    } catch (err) {
+      console.error(
+        `[telegram] failed to notify additional staff chat ${chatId}:`,
+        err
+      );
+    }
+  }
+
+  return primaryMessageId;
 }
