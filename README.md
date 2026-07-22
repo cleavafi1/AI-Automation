@@ -250,8 +250,12 @@ approval it re-checks and places a **tentative** hold. Nothing is auto-confirmed
     ikkunanpesu/tehopuhdistus/suursiivous) — a documented limitation on
     inconsistently-named historical data. Our own events are counted **exactly**
     via the `source: cleava-agent` tag, so going forward counting is reliable.
-  - `findNearestAvailableSlot(...)` returns the valid slot closest to the
-    requested time (or nearest upcoming when none given), searching ~21 days.
+  - `findNearestAvailableSlot(...)` — **forward-only** when a date was
+    requested: it never proposes a slot earlier than the customer's requested
+    day. If the requested day has no valid slot, it searches later days only
+    (never back to an earlier day, even if an earlier slot is closer in absolute
+    time), ~21 days out. When no date was requested (fully open-ended), it falls
+    back to the nearest upcoming slot from now.
 - **Extraction** — now also returns a **concrete** `requested_date`/
   `requested_time` (only when clearly resolvable; vague terms stay null). Given
   today's Helsinki date, "ensi maanantaina" resolves; "pian" does not.

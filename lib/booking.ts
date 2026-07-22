@@ -129,10 +129,20 @@ function buildSlot(
 }
 
 /**
- * Pure nearest-slot search over an already-fetched event list. Returns the
- * valid slot whose start is closest to `target` (the requested instant, or
- * `now` when no time was requested), searching forward SEARCH_SPAN_DAYS from the
- * anchor day. Never returns a slot in the past. Returns null if nothing fits.
+ * Pure nearest-slot search over an already-fetched event list.
+ *
+ * FORWARD-ONLY when a date was requested: we never propose a slot earlier than
+ * the customer's requested day. If the requested day has no valid slot, we
+ * search later days only (never back to an earlier day, even if an earlier slot
+ * is closer in absolute time). The search is anchored at max(today, requested
+ * day) and runs SEARCH_SPAN_DAYS forward from there. Among the searched days the
+ * valid slot closest to `target` wins, so the requested day is preferred and
+ * otherwise the soonest later day.
+ *
+ * When NO date was requested (`requested` is null — a fully open-ended request),
+ * behavior is unchanged: anchor at today and pick the nearest upcoming slot.
+ *
+ * Never returns a slot in the past. Returns null if nothing fits.
  */
 export function findNearestSlotPure(params: {
   durationHours: number;
@@ -148,8 +158,14 @@ export function findNearestSlotPure(params: {
   }
 
   const todayStr = wallDateString(utcToHelsinkiWall(now));
-  // Anchor the search at today; a requested day in the past can't be honoured.
-  const anchorStr = todayStr;
+  // Anchor the search. With a requested date, never search before it (nor before
+  // today — a past request can't be honoured): anchor = max(today, requested).
+  // Without a requested date, anchor at today (nearest-from-now).
+  let anchorStr = todayStr;
+  if (requested != null) {
+    const requestedStr = wallDateString(utcToHelsinkiWall(requested));
+    anchorStr = requestedStr > todayStr ? requestedStr : todayStr;
+  }
   const target = requested ?? now;
 
   let best: Slot | null = null;
