@@ -288,10 +288,57 @@ simply left empty and the quote is still produced (and sendable).
    conflicting event on the proposed slot first to verify the **409 / not sent**
    path.
 
-## Out of scope (Phase 5)
+## Phase 6 — Telegram staff approval flow
 
-The Telegram bot (Phase 6), converting tentative → confirmed on customer
-acceptance (Phase 7), and the natural-language edit loop.
+Every generated quote is pushed to a staff Telegram chat with **✅ Approve /
+❌ Decline / ✏️ Custom** buttons. Approve reuses the exact `/admin` "Approve &
+send" logic; Custom opens an AI edit loop. `/admin` is unchanged and still works.
+
+- **Env** — `TELEGRAM_BOT_TOKEN`, `TELEGRAM_STAFF_CHAT_ID` (only updates from
+  that chat are honored), and optional `TELEGRAM_WEBHOOK_SECRET`.
+- **`lib/telegram.ts`** — Bot API client (fetch-based, no dependency):
+  `sendMessage`, `answerCallbackQuery`, `clearButtons`, the 3-button keyboard,
+  and the staff notification body (name, service, size, location, price or
+  "quote-only", proposed slot or "no slot found", flag reason, drafted text).
+- **Notification** — sent at quote generation (`lib/quote.ts`, same trigger as
+  the calendar step); the Telegram `message_id` is stored on the quote. A
+  Telegram outage never breaks generation.
+- **Schema** (`0011`) — `quotes.telegram_message_id`, `quotes.decline_reason`,
+  the `'declined'` status, and `telegram_pending_edits (chat_id, quote_id, kind,
+  created_at)` — the stateless webhook uses this to know a follow-up text is an
+  edit instruction (`kind='edit'`) or a decline reason (`kind='decline_reason'`).
+- **Webhook** — `POST /api/telegram/webhook` (register with
+  `node scripts/telegram-set-webhook.mjs https://<host>/api/telegram/webhook`).
+  Always returns 200 (Telegram retries non-2xx); handlers surface errors back to
+  the chat. Handles button presses and text messages.
+  - **Approve** → `lib/approve-send.ts` `approveAndSend()` composes the existing
+    `placeTentativeHold` + `sendOfferForQuote` (final calendar re-check →
+    tentative hold → send; refuses + reverts if the slot is gone). Not duplicated.
+  - **Decline** → status `'declined'`, asks for an optional reason, stores the
+    next text as `decline_reason`. No customer email.
+  - **Custom** → asks for changes in plain language, then `lib/telegram-edit.ts`
+    sends the instruction + current draft to Claude, which rewrites the text
+    **changing only what was asked** and preserving every other fact. If the
+    date/time changed, availability is **re-checked** for the new slot. The
+    revised draft is sent back with the same three buttons — the loop continues
+    until Approve or Decline. The pending row is claimed (deleted) before the
+    Claude call so a Telegram retry can't double-process.
+- **`scripts/telegram-set-webhook.mjs`** — registers/clears the webhook.
+
+### Testing Phase 6
+
+1. Create a bot with @BotFather, set `TELEGRAM_BOT_TOKEN` + `TELEGRAM_STAFF_CHAT_ID`,
+   apply migration `0011`, deploy, then run the setWebhook script.
+2. Generate a quote → a Telegram message with the three buttons appears.
+3. Press **✏️ Custom**, send e.g. *"muuta hinta 180 €:oon ja siirrä perjantaille
+   klo 12"* → the revised draft comes back with buttons (edit loop). Press
+   **✅ Approve** → offer emailed + tentative hold placed, or **❌ Decline** →
+   status declined and it asks for a reason.
+
+## Out of scope (Phase 6)
+
+WhatsApp (later swap-in once Meta verification clears), customer-side acceptance
+handling (Phase 7).
 
 ## Out of scope (admin phase)
 

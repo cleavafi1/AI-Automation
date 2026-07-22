@@ -58,6 +58,17 @@ export type Quote = {
   proposed_end_time: string | null; // "HH:MM[:SS]"
   // Set when the tentative hold event is created on approval.
   calendar_event_id: string | null;
+  // Telegram approval flow (Phase 6).
+  telegram_message_id: number | null;
+  decline_reason: string | null;
+  created_at: string;
+};
+
+export type TelegramPendingEdit = {
+  id: string;
+  chat_id: number;
+  quote_id: string;
+  kind: "edit" | "decline_reason";
   created_at: string;
 };
 

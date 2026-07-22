@@ -12,6 +12,7 @@ import {
 import { findNearestAvailableSlot, type Slot } from "./booking";
 import { resolveUusimaa } from "./locations";
 import { parseHelsinkiDateTime } from "./timezone";
+import { sendQuoteNotification, isTelegramConfigured } from "./telegram";
 import {
   isHomeService,
   serviceLabel,
@@ -398,5 +399,33 @@ export async function generateQuoteForInquiry(inquiryId: string): Promise<Quote>
     throw new Error(`Failed to save quote: ${insertError.message}`);
   }
 
-  return inserted as Quote;
+  const savedQuote = inserted as Quote;
+
+  // 7. Notify staff on Telegram (Phase 6) with the three action buttons. Like
+  // the calendar step, a Telegram outage must NOT break quote generation — we
+  // log and move on, and store the message id so the webhook can reference it.
+  if (isTelegramConfigured()) {
+    try {
+      const messageId = await sendQuoteNotification(savedQuote, typedInquiry);
+      const { error: tgUpdateError } = await supabase
+        .from("quotes")
+        .update({ telegram_message_id: messageId })
+        .eq("id", savedQuote.id);
+      if (tgUpdateError) {
+        console.error(
+          "[quote] failed to store telegram_message_id:",
+          tgUpdateError.message
+        );
+      } else {
+        savedQuote.telegram_message_id = messageId;
+      }
+    } catch (err) {
+      console.error(
+        `[quote] Telegram notification failed for quote ${savedQuote.id}:`,
+        err
+      );
+    }
+  }
+
+  return savedQuote;
 }
