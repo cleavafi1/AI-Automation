@@ -28,6 +28,9 @@ const RawExtractionSchema = z.object({
   // Concrete, resolvable date/time only (see prompt) — vague terms stay null.
   requested_date: z.string().nullable(),
   requested_time: z.string().nullable(),
+  // True when requested_date is a "by/before X" deadline (latest acceptable day)
+  // rather than a target/preferred day. Drives backward slot search.
+  date_is_deadline: z.boolean().nullable(),
   frequency: z.string().nullable(),
   condition_notes: z.string().nullable(),
   // Billing address components (for invoicing).
@@ -49,6 +52,7 @@ const RAW_EXTRACTION_JSON_SCHEMA = {
     preferred_time: { type: ["string", "null"] },
     requested_date: { type: ["string", "null"] },
     requested_time: { type: ["string", "null"] },
+    date_is_deadline: { type: ["boolean", "null"] },
     frequency: { type: ["string", "null"] },
     condition_notes: { type: ["string", "null"] },
     billing_street: { type: ["string", "null"] },
@@ -63,6 +67,7 @@ const RAW_EXTRACTION_JSON_SCHEMA = {
     "preferred_time",
     "requested_date",
     "requested_time",
+    "date_is_deadline",
     "frequency",
     "condition_notes",
     "billing_street",
@@ -81,6 +86,8 @@ export type Extraction = {
   // Normalized concrete appointment request (Helsinki), for the slot finder.
   requested_date: string | null; // "YYYY-MM-DD"
   requested_time: string | null; // "HH:MM"
+  // requested_date is a "by/before X" deadline (latest acceptable), not a target.
+  date_is_deadline: boolean;
   frequency: string | null;
   condition_notes: string | null;
   needs_clarification: boolean;
@@ -103,8 +110,9 @@ Kentät:
 - postal_code: 5-numeroinen postinumero jos mainittu, muuten null.
 - city: kaupunki/paikkakunta jos mainittu (esim. Helsinki, Espoo, Vantaa, Jyväskylä), muuten null.
 - preferred_time: toivottu ajankohta asiakkaan omin sanoin (esim. "ensi viikolla", "15.8. aamupäivä"), muuten null.
-- requested_date: TÄSMÄLLINEN toivottu päivä muodossa YYYY-MM-DD, jos asiakas antaa selkeän päivämäärän tai selvästi laskettavissa olevan päivän (esim. "15.8." → tämän vuoden 15. elokuuta, "ensi maanantaina" → laske alla annetusta tämän päivän päivämäärästä, "ma. 27.7." → 2026-07-27). Jos asiakas antaa USEITA vaihtoehtoisia päiviä (esim. "27.7. tai 28.7.", "maanantai tai tiistai"), valitse NIISTÄ AIKAISIN konkreettinen päivä (esim. "27.7. tai 28.7." → 2026-07-27); muut vaihtoehdot säilyvät preferred_time-kentässä. Palauta null VAIN jos ajankohta on aidosti epämääräinen eikä sisällä yhtään konkreettista päivää ("pian", "ensi viikolla", "elokuussa", "joskus") — älä arvaa tarkkaa päivää tällöin.
+- requested_date: TÄSMÄLLINEN toivottu päivä muodossa YYYY-MM-DD, jos asiakas antaa selkeän päivämäärän tai selvästi laskettavissa olevan päivän (esim. "15.8." → tämän vuoden 15. elokuuta, "ensi maanantaina" → laske alla annetusta tämän päivän päivämäärästä, "ma. 27.7." → 2026-07-27). Jos asiakas antaa USEITA vaihtoehtoisia päiviä (esim. "27.7. tai 28.7.", "maanantai tai tiistai"), valitse NIISTÄ AIKAISIN konkreettinen päivä (esim. "27.7. tai 28.7." → 2026-07-27); muut vaihtoehdot säilyvät preferred_time-kentässä. Jos asiakas antaa MÄÄRÄPÄIVÄN eli takarajan ("ennen 30.7.", "30.7. mennessä", "viimeistään 30.7.", "before July 30th", "by Friday"), palauta requested_date VIIMEISENÄ hyväksyttävänä päivänä: "mennessä/viimeistään/by 30.7." → 2026-07-30; "ennen/before 30.7." → sitä edeltävä päivä 2026-07-29. Palauta null VAIN jos ajankohta on aidosti epämääräinen eikä sisällä yhtään konkreettista päivää ("pian", "ensi viikolla", "elokuussa", "joskus") — älä arvaa tarkkaa päivää tällöin.
 - requested_time: TÄSMÄLLINEN kellonaika muodossa HH:MM (24h), VAIN jos asiakas antaa selkeän ajan (esim. "klo 10", "aamupäivällä" → älä arvaa; vain jos tarkka). Muuten null.
+- date_is_deadline: true JOS requested_date on takaraja / määräpäivä eli viimeisin hyväksyttävä päivä ("ennen", "mennessä", "viimeistään", "before", "by", "no later than"). false jos päivä on toivottu/tavoitepäivä ("15.8.", "ensi maanantaina", "27.7. tai 28.7."). Jos requested_date on null, palauta false.
 - frequency: siivousväli. Palauta täsmälleen yksi näistä koodeista tai null: ${FREQUENCY_VALUES.join(", ")}. (kertaluontoinen = kertaluontoinen, viikoittain = viikoittain, joka_toinen_viikko = joka toinen viikko, kuukausittain = kuukausittain.)
 - condition_notes: maininnat kunnosta, lemmikeistä, kulusta/avaimista, erikoistoiveista tai lisätöistä (esim. "kaksi kissaa", "uuni pestävä", "avain saatavilla ovimatolta"). Muuten null.
 - billing_street: laskutusosoitteen kadunnimi jos mainittu (esim. "Mannerheimintie"), muuten null.
@@ -206,6 +214,9 @@ export function normalizeExtraction(raw: RawExtraction): Extraction {
       ? raw.requested_time.trim().padStart(5, "0")
       : null;
 
+  // Only meaningful when we actually have a concrete requested_date.
+  const date_is_deadline = requested_date != null && raw.date_is_deadline === true;
+
   const clean = (v: string | null) => (v && v.trim() ? v.trim() : null);
   const billing_street = clean(raw.billing_street);
   const billing_building_number = clean(raw.billing_building_number);
@@ -239,6 +250,7 @@ export function normalizeExtraction(raw: RawExtraction): Extraction {
     preferred_time,
     requested_date,
     requested_time,
+    date_is_deadline,
     frequency,
     condition_notes,
     needs_clarification,

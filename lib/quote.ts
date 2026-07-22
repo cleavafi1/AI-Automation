@@ -222,6 +222,8 @@ export async function generateQuoteForInquiry(inquiryId: string): Promise<Quote>
   // slot finder below. Null when the customer gave only a vague time.
   let requestedDate: string | null = null;
   let requestedTime: string | null = null;
+  // True when requestedDate is a "by/before X" deadline, not a target day.
+  let requestedDateIsDeadline = false;
 
   // 1b. Extract structured fields from the free-text request (Phase 4). This is
   // a separate Claude call from the drafting one below. Persist the extracted
@@ -230,6 +232,7 @@ export async function generateQuoteForInquiry(inquiryId: string): Promise<Quote>
     const extraction = await extractFromRequest(typedInquiry.raw_request);
     requestedDate = extraction.requested_date;
     requestedTime = extraction.requested_time;
+    requestedDateIsDeadline = extraction.date_is_deadline;
 
     // Fold preferred time + condition notes into the free-text notes column so
     // downstream flag logic / display can use them.
@@ -315,6 +318,7 @@ export async function generateQuoteForInquiry(inquiryId: string): Promise<Quote>
       proposedSlot = await findNearestAvailableSlot({
         durationHours: reserveHours,
         requested,
+        deadline: requestedDateIsDeadline,
       });
     } catch (err) {
       console.error(

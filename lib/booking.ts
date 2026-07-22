@@ -149,16 +149,65 @@ function buildSlot(
 export function findNearestSlotPure(params: {
   durationHours: number;
   requested: Date | null;
+  // When true, `requested` is the LATEST acceptable day ("before/by X"), not a
+  // target to search forward from. See the deadline branch below.
+  deadline?: boolean;
   now: Date;
   events: CalEvent[];
 }): Slot | null {
   const { durationHours, requested, now, events } = params;
+  const deadline = params.deadline ?? false;
   const durationMin = Math.ceil(durationHours * 60);
   if (durationMin <= 0 || durationMin > WORK_END_MIN - WORK_START_MIN) {
     return null; // can't fit in a single working day
   }
 
   const todayStr = wallDateString(utcToHelsinkiWall(now));
+
+  // DEADLINE MODE: the customer gave a "by/before X" deadline, so `requested` is
+  // the LATEST acceptable day — not a forward-search anchor. Search today →
+  // deadline (inclusive) and prefer the slot CLOSEST TO the deadline (i.e. as
+  // late as possible while still meeting it — the natural choice for e.g. a
+  // move-out before handover). If nothing fits on or before the deadline, fall
+  // back to the soonest upcoming slot (open-ended search) so we still propose
+  // something the customer can accept or renegotiate.
+  if (deadline && requested != null) {
+    const deadlineStr = wallDateString(utcToHelsinkiWall(requested));
+    if (deadlineStr >= todayStr) {
+      // Aim at end of the deadline day so "closest to target" resolves to the
+      // latest acceptable slot rather than the earliest.
+      const target = parseHelsinkiDateTime(deadlineStr, "23:59") ?? requested;
+      let best: Slot | null = null;
+      let bestDistance = Number.POSITIVE_INFINITY;
+      for (let offset = 0; offset <= SEARCH_SPAN_DAYS; offset++) {
+        const dateStr = helsinkiDatePlusDays(todayStr, offset);
+        if (dateStr > deadlineStr) break; // past the deadline — stop searching
+        if (countCleaningOnDay(dateStr, events) >= MAX_CLEANING_PER_DAY) continue;
+        for (
+          let startMin = WORK_START_MIN;
+          startMin + durationMin <= WORK_END_MIN;
+          startMin += SLOT_INCREMENT_MIN
+        ) {
+          const slot = buildSlot(dateStr, startMin, durationMin);
+          if (!slot) continue;
+          if (slot.startInstant.getTime() <= now.getTime()) continue;
+          if (!isIntervalFree(slot.startInstant, slot.endInstant, events)) {
+            continue;
+          }
+          const distance = Math.abs(
+            slot.startInstant.getTime() - target.getTime()
+          );
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            best = slot;
+          }
+        }
+      }
+      if (best) return best;
+    }
+    // Deadline already in the past, or nothing free on/before it → soonest slot.
+    return findNearestSlotPure({ durationHours, requested: null, now, events });
+  }
   // Anchor the search. With a requested date, never search before it (nor before
   // today — a past request can't be honoured): anchor = max(today, requested).
   // Without a requested date, anchor at today (nearest-from-now).
@@ -209,6 +258,8 @@ export function findNearestSlotPure(params: {
 export async function findNearestAvailableSlot(params: {
   durationHours: number;
   requested: Date | null;
+  // See findNearestSlotPure: true when `requested` is a "by/before X" deadline.
+  deadline?: boolean;
   now?: Date;
 }): Promise<Slot | null> {
   const now = params.now ?? new Date();
@@ -219,6 +270,7 @@ export async function findNearestAvailableSlot(params: {
   return findNearestSlotPure({
     durationHours: params.durationHours,
     requested: params.requested,
+    deadline: params.deadline,
     now,
     events,
   });
