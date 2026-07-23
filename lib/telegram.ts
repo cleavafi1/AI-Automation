@@ -291,6 +291,21 @@ export async function sendQuoteNotification(
   return primaryMessageId;
 }
 
+/** Plain staff broadcast (no action buttons) — for notices needing no approval. */
+export async function sendStaffNotice(text: string): Promise<number> {
+  const { staffChatIds } = getTelegramConfig();
+  const [primaryId, ...others] = staffChatIds;
+  const primaryMessageId = await sendMessage({ chatId: primaryId, text });
+  for (const chatId of others) {
+    try {
+      await sendMessage({ chatId, text });
+    } catch (err) {
+      console.error(`[telegram] staff notice to ${chatId} failed:`, err);
+    }
+  }
+  return primaryMessageId;
+}
+
 /**
  * Send a classified-reply review (Phase 7) to all staff with the same
  * Approve/Decline/Custom buttons, wired to the conversation row. Returns the

@@ -18,6 +18,7 @@ import {
 import {
   buildReplyReviewText,
   sendReplyReviewNotification,
+  sendStaffNotice,
   isTelegramConfigured,
 } from "./telegram";
 import type { EmailConversation, Inquiry, Quote } from "./types";
@@ -90,6 +91,39 @@ export async function processInboundReply(
     return { matched: false };
   }
   const { quote, inquiry } = loaded;
+
+  // Guard: a reply with no readable text (body fetch failed, attachment-only, or
+  // genuinely empty) must NOT trigger a misleading auto-clarification. Record it
+  // and flag staff to read the email manually instead of drafting a guess.
+  if (!parsed.bodyText || !parsed.bodyText.trim()) {
+    const inbound = await insertConversation({
+      quote_id: quote.id,
+      direction: "inbound",
+      from_address: parsed.fromAddress,
+      subject: parsed.subject,
+      body_text: parsed.bodyText,
+      resend_email_id: parsed.resendEmailId,
+      classified_intent: null,
+      status: "approved",
+    });
+    let telegramSent = false;
+    if (isTelegramConfigured()) {
+      try {
+        await sendStaffNotice(
+          `📨 Asiakasvastaus (${inquiry.name}) saapui ILMAN luettavaa tekstisisältöä (mahdollinen liite tai tyhjä viesti). Automaattista vastausta ei laadittu — tarkista sähköposti manuaalisesti.`
+        );
+        telegramSent = true;
+      } catch (err) {
+        console.error("[reply-flow] empty-body staff notice failed:", err);
+      }
+    }
+    return {
+      matched: true,
+      conversationId: inbound.id,
+      intent: "unclear",
+      telegramSent,
+    };
+  }
 
   // Prior history (before recording this new inbound message) is the context.
   const history = await loadConversationHistory(quote.id);

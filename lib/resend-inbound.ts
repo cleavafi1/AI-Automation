@@ -1,5 +1,4 @@
 import crypto from "crypto";
-import { getInboundResend } from "./email";
 
 // Resend Inbound webhooks are signed with the Svix scheme. We verify the
 // signature over the RAW request body before processing anything (Phase 7,
@@ -101,34 +100,65 @@ export function parseResendInbound(payload: unknown): ResendInboundParsed | null
 }
 
 /**
- * Fetch the full inbound email by id from the INBOUND Resend account (uses
- * RESEND_INBOUND_API_KEY via getInboundResend — NOT the sending key). The
- * webhook payload can arrive without the full body; this retrieves the complete
- * text/html and the address metadata.
+ * Fetch a received email's full content from the INBOUND Resend account.
+ *
+ * The inbound webhook is METADATA-ONLY (no body); the body must be retrieved via
+ * the *received-emails* endpoint GET /emails/receiving/{id} — NOT GET /emails/{id}
+ * (that one is for SENT emails and 404s on inbound). Uses RESEND_INBOUND_API_KEY
+ * (the account that owns reply.cleava.fi), NOT the sending key.
  */
 export async function fetchFullInboundEmail(
   emailId: string
 ): Promise<ResendInboundParsed | null> {
-  const resend = getInboundResend();
-  const { data, error } = await resend.emails.get(emailId);
-  if (error) {
-    throw new Error(`Resend inbound email fetch failed: ${error.message}`);
+  const apiKey = process.env.RESEND_INBOUND_API_KEY;
+  if (!apiKey) {
+    throw new Error("Missing RESEND_INBOUND_API_KEY environment variable.");
   }
-  if (!data) return null;
-  const d = data as unknown as Record<string, unknown>;
+  const res = await fetch(`https://api.resend.com/emails/receiving/${emailId}`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(
+      `Resend received-email fetch failed: HTTP ${res.status} ${detail.slice(0, 200)}`
+    );
+  }
+  const d = (await res.json()) as Record<string, unknown>;
   const text =
-    typeof d.text === "string"
+    typeof d.text === "string" && d.text.trim()
       ? d.text
       : typeof d.html === "string"
         ? stripHtml(d.html)
         : "";
+  // `received_for` is the address the mail was received for (our quote-{id}@…);
+  // include it alongside `to` for reliable quote matching.
+  const addresses = [...addrList(d.to), ...addrList(d.received_for)];
   return {
-    toAddresses: addrList(d.to),
+    toAddresses: [...new Set(addresses)],
     fromAddress: addrList(d.from)[0] ?? "",
     subject: typeof d.subject === "string" ? d.subject : null,
     bodyText: text,
     resendEmailId: emailId,
   };
+}
+
+/**
+ * Remove a quoted original message from a reply so the classifier reads only the
+ * customer's new text. Conservative: never returns empty if the input had text.
+ */
+export function stripQuotedReply(text: string): string {
+  const lines = (text ?? "").split(/\r?\n/);
+  const out: string[] = [];
+  for (const line of lines) {
+    if (/^\s*>/.test(line)) break; // quoted line
+    if (/^\s*On\b.*@/.test(line)) break; // "On <date> <email> wrote:" attribution
+    if (/\bwrote:\s*$/.test(line)) break; // attribution line ending in "wrote:"
+    if (/^\s*-{2,}\s*Original Message\s*-{2,}/i.test(line)) break;
+    if (/^\s*From:\s.*@/.test(line)) break; // Outlook-style forwarded header
+    out.push(line);
+  }
+  const trimmed = out.join("\n").trim();
+  return trimmed || (text ?? "").trim();
 }
 
 /**
@@ -146,13 +176,14 @@ export async function resolveInbound(
   try {
     const full = await fetchFullInboundEmail(payloadParsed.resendEmailId);
     if (!full) return payloadParsed;
+    const bodyText = stripQuotedReply(full.bodyText || payloadParsed.bodyText);
     return {
-      toAddresses: full.toAddresses.length
-        ? full.toAddresses
-        : payloadParsed.toAddresses,
+      toAddresses: [
+        ...new Set([...payloadParsed.toAddresses, ...full.toAddresses]),
+      ],
       fromAddress: full.fromAddress || payloadParsed.fromAddress,
       subject: full.subject ?? payloadParsed.subject,
-      bodyText: full.bodyText || payloadParsed.bodyText,
+      bodyText,
       resendEmailId: payloadParsed.resendEmailId,
     };
   } catch (err) {
