@@ -17,6 +17,24 @@ function getResend(): Resend {
   return cachedClient;
 }
 
+// Inbound replies (reply.cleava.fi) are verified under a SEPARATE Resend account
+// from the sending domain (free tier = one domain per account, to be consolidated
+// later). Fetching an inbound email's full body via the API must therefore use
+// that account's own key — RESEND_INBOUND_API_KEY — not the sending key above.
+let cachedInboundClient: Resend | null = null;
+
+export function getInboundResend(): Resend {
+  if (cachedInboundClient) return cachedInboundClient;
+
+  const apiKey = process.env.RESEND_INBOUND_API_KEY;
+  if (!apiKey) {
+    throw new Error("Missing RESEND_INBOUND_API_KEY environment variable.");
+  }
+
+  cachedInboundClient = new Resend(apiKey);
+  return cachedInboundClient;
+}
+
 // The sender address is read from the environment on every call — there is NO
 // hardcoded fallback (e.g. onboarding@resend.dev). Set EMAIL_FROM_ADDRESS in
 // the environment (e.g. info@cleava.fi) or sends throw.

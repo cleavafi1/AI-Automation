@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
-import { verifyResendSignature, parseResendInbound } from "@/lib/resend-inbound";
+import {
+  verifyResendSignature,
+  parseResendInbound,
+  resolveInbound,
+} from "@/lib/resend-inbound";
 import { quoteIdFromReplyAddress } from "@/lib/reply-address";
 import { processInboundReply } from "@/lib/reply-flow";
 
@@ -40,10 +44,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "bad json" }, { status: 400 });
   }
 
-  const parsed = parseResendInbound(payload);
-  if (!parsed) {
+  const payloadParsed = parseResendInbound(payload);
+  if (!payloadParsed) {
     return NextResponse.json({ ok: true, note: "no parseable data" }, { status: 200 });
   }
+
+  // Fetch the full email body from the INBOUND Resend account (separate key)
+  // and merge it over the webhook payload — the payload can omit the full body.
+  const parsed = await resolveInbound(payloadParsed);
 
   // Map the reply to its quote via the reply-to address (quote-{id}@reply…).
   const quoteId =

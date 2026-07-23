@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { getInboundResend } from "./email";
 
 // Resend Inbound webhooks are signed with the Svix scheme. We verify the
 // signature over the RAW request body before processing anything (Phase 7,
@@ -97,4 +98,68 @@ export function parseResendInbound(payload: unknown): ResendInboundParsed | null
           ? data.id
           : null,
   };
+}
+
+/**
+ * Fetch the full inbound email by id from the INBOUND Resend account (uses
+ * RESEND_INBOUND_API_KEY via getInboundResend — NOT the sending key). The
+ * webhook payload can arrive without the full body; this retrieves the complete
+ * text/html and the address metadata.
+ */
+export async function fetchFullInboundEmail(
+  emailId: string
+): Promise<ResendInboundParsed | null> {
+  const resend = getInboundResend();
+  const { data, error } = await resend.emails.get(emailId);
+  if (error) {
+    throw new Error(`Resend inbound email fetch failed: ${error.message}`);
+  }
+  if (!data) return null;
+  const d = data as unknown as Record<string, unknown>;
+  const text =
+    typeof d.text === "string"
+      ? d.text
+      : typeof d.html === "string"
+        ? stripHtml(d.html)
+        : "";
+  return {
+    toAddresses: addrList(d.to),
+    fromAddress: addrList(d.from)[0] ?? "",
+    subject: typeof d.subject === "string" ? d.subject : null,
+    bodyText: text,
+    resendEmailId: emailId,
+  };
+}
+
+/**
+ * The full inbound reply: the fetched body/metadata (authoritative) merged over
+ * whatever the webhook payload carried, so a missing field on either side is
+ * filled from the other. Falls back to the payload alone if the fetch is
+ * unavailable (no key / API error) so a reply is never dropped.
+ */
+export async function resolveInbound(
+  payloadParsed: ResendInboundParsed
+): Promise<ResendInboundParsed> {
+  if (!payloadParsed.resendEmailId || !process.env.RESEND_INBOUND_API_KEY) {
+    return payloadParsed;
+  }
+  try {
+    const full = await fetchFullInboundEmail(payloadParsed.resendEmailId);
+    if (!full) return payloadParsed;
+    return {
+      toAddresses: full.toAddresses.length
+        ? full.toAddresses
+        : payloadParsed.toAddresses,
+      fromAddress: full.fromAddress || payloadParsed.fromAddress,
+      subject: full.subject ?? payloadParsed.subject,
+      bodyText: full.bodyText || payloadParsed.bodyText,
+      resendEmailId: payloadParsed.resendEmailId,
+    };
+  } catch (err) {
+    console.error(
+      "[email/inbound] full-body fetch failed; using webhook payload body:",
+      err
+    );
+    return payloadParsed;
+  }
 }
