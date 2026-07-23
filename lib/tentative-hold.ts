@@ -10,6 +10,76 @@ import { normalizeHHMM } from "./timezone";
 import { serviceLabel } from "./constants";
 import type { Inquiry, Quote } from "./types";
 
+// --- Calendar event formatting (matches Cleava staff's manual booking style) ---
+// Title:    "{FirstName} {Nh} Offerilla {service} {size}m² {phone}"
+// Location: customer address (so it maps). Description: full details.
+// Tentative holds get an "(alustava)" prefix so staff can tell them apart.
+
+function firstNameOf(name: string | null | undefined): string {
+  const n = (name ?? "").trim().split(/\s+/)[0];
+  return n || "asiakas";
+}
+
+function onsiteHoursLabel(startTime: string, endTime: string): string {
+  const [sh, sm] = startTime.split(":").map(Number);
+  const [eh, em] = endTime.split(":").map(Number);
+  const h = (eh * 60 + em - (sh * 60 + sm)) / 60;
+  if (!Number.isFinite(h) || h <= 0) return "";
+  return `${Number.isInteger(h) ? String(h) : String(h).replace(".", ",")}h`;
+}
+
+function customerAddress(inq: Inquiry | null): string {
+  const street = [
+    inq?.billing_street,
+    inq?.billing_building_number,
+    inq?.billing_apartment,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const cityLine = [inq?.postal_code, inq?.city].filter(Boolean).join(" ");
+  return [street, cityLine].filter(Boolean).join(", ");
+}
+
+function bookingTitle(
+  inq: Inquiry | null,
+  startTime: string,
+  endTime: string
+): string {
+  const parts: string[] = [firstNameOf(inq?.name)];
+  const hrs = onsiteHoursLabel(startTime, endTime);
+  if (hrs) parts.push(hrs);
+  parts.push("Offerilla");
+  if (inq?.service_type) parts.push(serviceLabel(inq.service_type).toLowerCase());
+  if (inq?.property_size_m2 != null) parts.push(`${inq.property_size_m2}m²`);
+  if (inq?.phone) parts.push(inq.phone);
+  return parts.join(" ");
+}
+
+function bookingDescription(
+  inq: Inquiry | null,
+  quote: Quote,
+  confirmed: boolean
+): string {
+  return [
+    confirmed
+      ? "Vahvistettu varaus (asiakas hyväksynyt tarjouksen)."
+      : "Alustava (tentative) varaus — odottaa asiakkaan vahvistusta.",
+    inq?.name ? `Asiakas: ${inq.name}` : null,
+    inq?.phone ? `Puhelin: ${inq.phone}` : null,
+    inq?.email ? `Sähköposti: ${inq.email}` : null,
+    `Palvelu: ${serviceLabel(inq?.service_type ?? null)}`,
+    inq?.property_size_m2 != null ? `Koko: ${inq.property_size_m2} m²` : null,
+    customerAddress(inq) ? `Osoite: ${customerAddress(inq)}` : null,
+    quote.estimated_price_eur != null
+      ? `Arviohinta: ${quote.estimated_price_eur} € alkaen`
+      : null,
+    inq?.notes ? `Lisätiedot: ${inq.notes}` : null,
+    `Quote ID: ${quote.id}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 // Thrown when the proposed slot filled up between quote generation and approval.
 export class SlotNoLongerFreeError extends Error {
   constructor() {
@@ -104,25 +174,10 @@ export async function placeTentativeHold(quoteId: string): Promise<HoldResult> {
   }
 
   // Create the tentative event, tagged so future counting is exact.
-  const name = typedInquiry?.name ?? "asiakas";
-  const service = serviceLabel(typedInquiry?.service_type ?? null);
   const eventId = await createTaggedEvent({
-    summary: `Tentative – ${name} – Quote awaiting acceptance`,
-    description: [
-      `Alustava (tentative) varaus — odottaa asiakkaan vahvistusta.`,
-      `Palvelu: ${service}`,
-      typedInquiry?.property_size_m2 != null
-        ? `Koko: ${typedInquiry.property_size_m2} m²`
-        : null,
-      typedInquiry?.postal_code || typedInquiry?.city
-        ? `Sijainti: ${[typedInquiry?.postal_code, typedInquiry?.city]
-            .filter(Boolean)
-            .join(" ")}`
-        : null,
-      `Quote ID: ${quoteId}`,
-    ]
-      .filter(Boolean)
-      .join("\n"),
+    summary: `(alustava) ${bookingTitle(typedInquiry, startTime, endTime)}`,
+    description: bookingDescription(typedInquiry, typedQuote, false),
+    location: customerAddress(typedInquiry) || undefined,
     date,
     startTime,
     endTime,
@@ -195,17 +250,9 @@ export async function confirmBooking(quoteId: string): Promise<ConfirmResult> {
     return { status: "confirmed_no_event" };
   }
 
-  const name = inquiry?.name ?? "asiakas";
-  const service = serviceLabel(inquiry?.service_type ?? null);
-  const summary = `Confirmed – ${name} – ${service}`;
-  const description = [
-    "Vahvistettu varaus (asiakas hyväksynyt).",
-    `Palvelu: ${service}`,
-    inquiry?.property_size_m2 != null ? `Koko: ${inquiry.property_size_m2} m²` : null,
-    `Quote ID: ${quoteId}`,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const summary = bookingTitle(inquiry, startTime, endTime);
+  const description = bookingDescription(inquiry, quote, true);
+  const location = customerAddress(inquiry) || undefined;
 
   if (quote.calendar_event_id) {
     // Final re-check ignoring our own tentative event; still exists → confirm it.
@@ -218,7 +265,7 @@ export async function confirmBooking(quoteId: string): Promise<ConfirmResult> {
     if (!free) throw new SlotNoLongerFreeError();
     const existing = await getEventById(quote.calendar_event_id);
     if (existing) {
-      await updateEvent(quote.calendar_event_id, { summary, description });
+      await updateEvent(quote.calendar_event_id, { summary, description, location });
       await supabase.from("quotes").update({ status: "confirmed" }).eq("id", quoteId);
       return { status: "confirmed", eventId: quote.calendar_event_id };
     }
@@ -231,6 +278,7 @@ export async function confirmBooking(quoteId: string): Promise<ConfirmResult> {
   const eventId = await createTaggedEvent({
     summary,
     description,
+    location,
     date,
     startTime,
     endTime,
@@ -268,15 +316,10 @@ export async function rescheduleTentativeHold(
     await deleteEvent(quote.calendar_event_id);
   }
 
-  const name = inquiry?.name ?? "asiakas";
-  const service = serviceLabel(inquiry?.service_type ?? null);
   const eventId = await createTaggedEvent({
-    summary: `Tentative – ${name} – Quote awaiting acceptance`,
-    description: [
-      "Alustava (tentative) varaus — uusi ehdotettu aika, odottaa asiakkaan vahvistusta.",
-      `Palvelu: ${service}`,
-      `Quote ID: ${quoteId}`,
-    ].join("\n"),
+    summary: `(alustava) ${bookingTitle(inquiry, slot.startTime, slot.endTime)}`,
+    description: bookingDescription(inquiry, quote, false),
+    location: customerAddress(inquiry) || undefined,
     date: slot.date,
     startTime: slot.startTime,
     endTime: slot.endTime,

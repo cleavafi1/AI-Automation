@@ -126,6 +126,8 @@ export async function listEvents(
 export type CreateEventInput = {
   summary: string;
   description?: string;
+  // Shown in the calendar's Location field (customer address) so it maps.
+  location?: string;
   // Helsinki wall-clock strings, e.g. "2026-07-25" and "10:00".
   date: string;
   startTime: string;
@@ -147,6 +149,7 @@ export async function createTaggedEvent(
     requestBody: {
       summary: input.summary,
       description: input.description,
+      location: input.location,
       start: {
         dateTime: `${input.date}T${input.startTime}:00`,
         timeZone: HELSINKI_TZ,
@@ -185,10 +188,10 @@ export async function getEventById(
   }
 }
 
-/** Overwrite an event's title/description (used to confirm a tentative hold). */
+/** Overwrite an event's title/description/location (e.g. confirming a hold). */
 export async function updateEvent(
   eventId: string,
-  patch: { summary?: string; description?: string }
+  patch: { summary?: string; description?: string; location?: string }
 ): Promise<void> {
   const calendar = getCalendar();
   await calendar.events.patch({
