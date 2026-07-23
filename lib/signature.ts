@@ -1,11 +1,16 @@
 // The single canonical closing block for every customer-facing offer email.
 // Appended in code (not written by the model) so it is byte-for-byte identical
 // on every quote and can never be duplicated. See applyStandardClosing.
+// Non-breaking spaces ( ) inside the phone number keep "+358 45 187 8083"
+// on one line so email clients can't wrap "8083" onto the next line (and it
+// auto-links as a single number).
+const PHONE = "+358 45 187 8083";
+
 export const CLOSING_SIGNATURE = [
   "Ystävällisin terveisin,",
   "Cleava-tiimi",
   "Cleava Siivouspalvelut",
-  "info@cleava.fi | +358 45 187 8083 | cleava.fi",
+  `info@cleava.fi | ${PHONE} | cleava.fi`,
   "Y-tunnus 3631044-9",
 ].join("\n");
 
