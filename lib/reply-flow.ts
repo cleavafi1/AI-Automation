@@ -75,6 +75,41 @@ function toSlot(
   return { date, startTime, endTime, startInstant, endInstant };
 }
 
+/** Normalize a reply subject to a single "Re:" prefix (avoids "Re: Re: …"). */
+function replySubject(subject: string | null): string {
+  const base = (subject ?? "").replace(/^(\s*re:\s*)+/i, "").trim();
+  return base ? `Re: ${base}` : "Cleava";
+}
+
+/**
+ * Format the customer's latest inbound message as a quoted reply block. Sending
+ * it BELOW the signature means the signature is no longer a bare trailing repeat,
+ * so Gmail trims this quote (as intended) and shows the fresh message + signature
+ * above it — instead of collapsing our signature behind the "…" trim marker.
+ */
+async function quotedLastInbound(quoteId: string): Promise<string> {
+  const supabase = getSupabaseAdmin();
+  const { data } = await supabase
+    .from("email_conversations")
+    .select("from_address, body_text, created_at")
+    .eq("quote_id", quoteId)
+    .eq("direction", "inbound")
+    .order("created_at", { ascending: false })
+    .limit(1);
+  const row = data?.[0] as
+    | { from_address: string | null; body_text: string | null; created_at: string }
+    | undefined;
+  if (!row?.body_text?.trim()) return "";
+  const d = new Date(row.created_at);
+  const date = `${d.getUTCDate()}.${d.getUTCMonth() + 1}.${d.getUTCFullYear()}`;
+  const who = row.from_address || "asiakas";
+  const quoted = row.body_text
+    .split(/\r?\n/)
+    .map((l) => `> ${l}`)
+    .join("\n");
+  return `On ${date}, ${who} wrote:\n${quoted}`;
+}
+
 /**
  * Process a verified inbound reply: record it, classify it against history,
  * draft a response (running availability for reschedules), store the draft as a
@@ -187,7 +222,7 @@ export async function processInboundReply(
     quote_id: quote.id,
     direction: "outbound",
     from_address: null,
-    subject: parsed.subject ? `Re: ${parsed.subject}` : "Cleava",
+    subject: replySubject(parsed.subject),
     body_text: draftedResponse,
     classified_intent: classification.intent,
     status: "pending_review",
@@ -300,11 +335,17 @@ export async function approveConversationReply(
     }
   }
 
-  // Send the email (reply-to still set so the conversation can continue).
+  // Send the email in proper reply format: the drafted message + signature, then
+  // the customer's quoted message below it. This keeps the signature visible
+  // (not collapsed by Gmail as a repeated trailing block) and threads cleanly.
+  const quoted = await quotedLastInbound(quote.id);
+  const emailText = quoted
+    ? `${row.body_text ?? ""}\n\n${quoted}`
+    : row.body_text ?? "";
   const result = await sendEmail({
     to: inquiry.email,
-    subject: row.subject ?? "Cleava",
-    text: row.body_text ?? "",
+    subject: replySubject(row.subject),
+    text: emailText,
     replyTo: replyToIfEnabled(quote.id),
   });
 
