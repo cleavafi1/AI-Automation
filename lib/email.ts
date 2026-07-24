@@ -40,6 +40,9 @@ export type SendEmailParams = {
   html?: string;
   text?: string;
   replyTo?: string | string[];
+  // Extra RFC 5322 headers (e.g. In-Reply-To / References) so a reply threads
+  // into the customer's existing conversation instead of showing as a new email.
+  headers?: Record<string, string>;
 };
 
 export type SendEmailResult = {
@@ -68,6 +71,7 @@ export async function sendEmail(
     to: params.to,
     subject: params.subject,
     replyTo: params.replyTo,
+    ...(params.headers ? { headers: params.headers } : {}),
   };
   const { data, error } = await resend.emails.send(
     params.html !== undefined

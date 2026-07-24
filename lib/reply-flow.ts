@@ -1,13 +1,16 @@
 import { getSupabaseAdmin } from "./supabase";
 import { sendEmail } from "./email";
 import { replyToIfEnabled } from "./reply-address";
+import { fetchInboundThreadHeaders } from "./resend-inbound";
+import { isHomeService } from "./constants";
+import { buildFactsBlock } from "./quote";
 import {
   insertConversation,
   loadConversationHistory,
 } from "./email-conversations";
 import { classifyReply } from "./reply-classify";
 import { draftReplyResponse, formatAppointment } from "./reply-draft";
-import { reserveHoursForQuote } from "./quote-duration";
+import { reserveHoursForQuote, computeEstimateForInquiry } from "./quote-duration";
 import { findNearestAvailableSlot, type Slot } from "./booking";
 import { parseHelsinkiDateTime } from "./timezone";
 import {
@@ -87,18 +90,27 @@ function replySubject(subject: string | null): string {
  * so Gmail trims this quote (as intended) and shows the fresh message + signature
  * above it — instead of collapsing our signature behind the "…" trim marker.
  */
-async function quotedLastInbound(quoteId: string): Promise<string> {
+type LatestInbound = {
+  from_address: string | null;
+  body_text: string | null;
+  created_at: string;
+  resend_email_id: string | null;
+};
+
+/** The most recent inbound (customer) message for a quote, or null. */
+async function loadLatestInbound(quoteId: string): Promise<LatestInbound | null> {
   const supabase = getSupabaseAdmin();
   const { data } = await supabase
     .from("email_conversations")
-    .select("from_address, body_text, created_at")
+    .select("from_address, body_text, created_at, resend_email_id")
     .eq("quote_id", quoteId)
     .eq("direction", "inbound")
     .order("created_at", { ascending: false })
     .limit(1);
-  const row = data?.[0] as
-    | { from_address: string | null; body_text: string | null; created_at: string }
-    | undefined;
+  return (data?.[0] as LatestInbound | undefined) ?? null;
+}
+
+function quotedInboundBlock(row: LatestInbound | null): string {
   if (!row?.body_text?.trim()) return "";
   const d = new Date(row.created_at);
   const date = `${d.getUTCDate()}.${d.getUTCMonth() + 1}.${d.getUTCFullYear()}`;
@@ -206,6 +218,23 @@ export async function processInboundReply(
     }
   }
 
+  // 3b. Structured duration/cleaners/price facts, mirroring the original offer,
+  // so the reply restates them proactively — hours + price stated up front, not
+  // withheld until after address/other details. Failure here must not block the
+  // draft (facts are an enhancement).
+  let factsBlock: string | null = null;
+  let mentionExtraHours = false;
+  try {
+    const { estimate, pricing } = await computeEstimateForInquiry(inquiry);
+    factsBlock = buildFactsBlock(estimate, pricing, null, classification.language);
+    mentionExtraHours =
+      inquiry.property_size_m2 != null &&
+      inquiry.property_size_m2 > 30 &&
+      (inquiry.service_type ? isHomeService(inquiry.service_type) : false);
+  } catch (err) {
+    console.error("[reply-flow] facts computation failed:", err);
+  }
+
   // 4. Draft the customer-facing response.
   const draftedResponse = await draftReplyResponse({
     intent: classification.intent,
@@ -215,6 +244,8 @@ export async function processInboundReply(
     replyText: parsed.bodyText,
     language: classification.language,
     newSlot,
+    factsBlock,
+    mentionExtraHours,
   });
 
   // 5. Store the drafted response as a pending_review outbound row.
@@ -338,15 +369,29 @@ export async function approveConversationReply(
   // Send the email in proper reply format: the drafted message + signature, then
   // the customer's quoted message below it. This keeps the signature visible
   // (not collapsed by Gmail as a repeated trailing block) and threads cleanly.
-  const quoted = await quotedLastInbound(quote.id);
+  const lastInbound = await loadLatestInbound(quote.id);
+  const quoted = quotedInboundBlock(lastInbound);
   const emailText = quoted
     ? `${row.body_text ?? ""}\n\n${quoted}`
     : row.body_text ?? "";
+
+  // Thread into the customer's conversation: set In-Reply-To / References to the
+  // customer's last message so mail clients group this reply with the thread
+  // instead of showing a brand-new email. Best-effort — no headers if unavailable.
+  let threadHeaders: Record<string, string> | undefined;
+  if (lastInbound?.resend_email_id) {
+    const t = await fetchInboundThreadHeaders(lastInbound.resend_email_id);
+    if (t) {
+      threadHeaders = { "In-Reply-To": t.messageId, References: t.references };
+    }
+  }
+
   const result = await sendEmail({
     to: inquiry.email,
     subject: replySubject(row.subject),
     text: emailText,
     replyTo: replyToIfEnabled(quote.id),
+    headers: threadHeaders,
   });
 
   await supabase

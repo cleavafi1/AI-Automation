@@ -153,7 +153,7 @@ function fmtSlotCompact(slot: Slot, language: "fi" | "en"): string {
  * null when there is no numeric estimate (quote-only / needs clarification), in
  * which case the draft stays prose-only.
  */
-function buildFactsBlock(
+export function buildFactsBlock(
   estimate: Estimate,
   pricing: ReturnType<typeof resolvePricing>,
   proposedSlot: Slot | null,

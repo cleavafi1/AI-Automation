@@ -142,6 +142,64 @@ export async function fetchFullInboundEmail(
   };
 }
 
+/** Pull a header value (case-insensitive) from Resend's headers field, which
+ * may be an array of {name,value} objects or a plain name→value map. */
+function headerValue(headers: unknown, name: string): string | null {
+  const want = name.toLowerCase();
+  if (Array.isArray(headers)) {
+    for (const h of headers) {
+      const o = h as Record<string, unknown>;
+      if (typeof o?.name === "string" && o.name.toLowerCase() === want) {
+        return typeof o.value === "string" ? o.value : null;
+      }
+    }
+    return null;
+  }
+  if (headers && typeof headers === "object") {
+    for (const [k, v] of Object.entries(headers as Record<string, unknown>)) {
+      if (k.toLowerCase() === want) return typeof v === "string" ? v : null;
+    }
+  }
+  return null;
+}
+
+export type InboundThreadHeaders = {
+  // The inbound message's RFC 5322 Message-ID (with angle brackets).
+  messageId: string;
+  // The References chain to carry forward (prior chain + this Message-ID).
+  references: string;
+};
+
+/**
+ * Fetch the RFC threading headers (Message-ID + References) of a received email
+ * so our reply can set In-Reply-To/References and thread into the customer's
+ * conversation. Best-effort: returns null on any failure (missing key, HTTP
+ * error, or no Message-ID header) — threading is an enhancement, never a blocker.
+ */
+export async function fetchInboundThreadHeaders(
+  emailId: string
+): Promise<InboundThreadHeaders | null> {
+  const apiKey = process.env.RESEND_INBOUND_API_KEY;
+  if (!apiKey) return null;
+  try {
+    const res = await fetch(
+      `https://api.resend.com/emails/receiving/${emailId}`,
+      { headers: { Authorization: `Bearer ${apiKey}` } }
+    );
+    if (!res.ok) return null;
+    const d = (await res.json()) as Record<string, unknown>;
+    const rawId = headerValue(d.headers, "message-id");
+    if (!rawId || !rawId.trim()) return null;
+    const messageId = rawId.trim();
+    const priorRefs = headerValue(d.headers, "references")?.trim() || "";
+    const references = priorRefs ? `${priorRefs} ${messageId}` : messageId;
+    return { messageId, references };
+  } catch (err) {
+    console.error("[email/inbound] thread-header fetch failed:", err);
+    return null;
+  }
+}
+
 /**
  * Remove a quoted original message from a reply so the classifier reads only the
  * customer's new text. Conservative: never returns empty if the input had text.
